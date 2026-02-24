@@ -44,6 +44,11 @@ from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantit
 from modules.live_catalog import LiveCatalog
 from modules.rom_estimator import ROMEstimator
 from modules.measurement_report import MeasurementReportGenerator
+from modules.bid_dashboard import (
+    BidDashboard, BidStatus, BidPriority, TradeScope,
+)
+from modules.plan_reader import PlanReader
+from modules.export_engine import ExportEngine
 from modules.self_service_scan import (
     CustomerIntakeForm,
     FiveDEstimate,
@@ -92,6 +97,9 @@ deductive = DeductiveEngine()
 live_catalog = LiveCatalog(settings)
 rom_estimator = ROMEstimator(settings)
 report_gen = MeasurementReportGenerator(settings)
+bid_dashboard = BidDashboard()
+plan_reader = PlanReader(settings)
+export_engine = ExportEngine()
 
 
 # ---------------------------------------------------------------------------
@@ -1027,6 +1035,298 @@ async def api_report_from_hover(request: Request):
     )
 
     return JSONResponse(report_gen.report_to_dict(report))
+
+
+# ---------------------------------------------------------------------------
+# Bid Dashboard — BEAM AI bid tracking clone
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/bids")
+async def api_create_bid(request: Request):
+    """Create a new bid project in the dashboard."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    # Map trade scope strings to enums
+    scope = []
+    for t in data.get("trade_scope", ["full_envelope"]):
+        try:
+            scope.append(TradeScope(t))
+        except ValueError:
+            scope.append(TradeScope.FULL_ENVELOPE)
+
+    project = bid_dashboard.create_project(
+        project_name=data.get("project_name", ""),
+        project_number=data.get("project_number", ""),
+        address=data.get("address", ""),
+        city=data.get("city", ""),
+        state=data.get("state", ""),
+        owner=data.get("owner", ""),
+        general_contractor=data.get("general_contractor", ""),
+        architect=data.get("architect", ""),
+        contact_name=data.get("contact_name", ""),
+        contact_email=data.get("contact_email", ""),
+        bid_due_date=data.get("bid_due_date", ""),
+        bid_due_time=data.get("bid_due_time", ""),
+        trade_scope=scope,
+        building_count=int(data.get("building_count", 1)),
+        total_sf=float(data.get("total_sf", 0)),
+        stories=int(data.get("stories", 0)),
+        estimator=data.get("estimator", ""),
+        priority=BidPriority(data.get("priority", "medium")),
+        description=data.get("description", ""),
+    )
+
+    return JSONResponse(bid_dashboard.project_to_dict(project))
+
+
+@app.get("/api/v1/bids")
+async def api_list_bids(
+    status: Optional[str] = None,
+    estimator: Optional[str] = None,
+    priority: Optional[str] = None,
+):
+    """List all bid projects with optional filters."""
+    s = BidStatus(status) if status else None
+    p = BidPriority(priority) if priority else None
+
+    projects = bid_dashboard.list_projects(
+        status=s, estimator=estimator, priority=p,
+    )
+    return JSONResponse({
+        "total": len(projects),
+        "projects": [bid_dashboard.project_to_dict(p) for p in projects],
+    })
+
+
+@app.get("/api/v1/bids/{project_id}")
+async def api_get_bid(project_id: str):
+    """Get a single bid project by ID."""
+    project = bid_dashboard.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    return JSONResponse(bid_dashboard.project_to_dict(project))
+
+
+@app.put("/api/v1/bids/{project_id}/status")
+async def api_update_bid_status(project_id: str, request: Request):
+    """Update a bid project's status."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    new_status = data.get("status")
+    if not new_status:
+        return JSONResponse({"error": "status required"}, status_code=400)
+
+    project = bid_dashboard.update_status(
+        project_id, BidStatus(new_status)
+    )
+    if not project:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+
+    return JSONResponse(bid_dashboard.project_to_dict(project))
+
+
+@app.post("/api/v1/bids/{project_id}/rfis")
+async def api_add_rfi(project_id: str, request: Request):
+    """Add an RFI to a bid project."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    rfi = bid_dashboard.add_rfi(
+        project_id,
+        subject=data.get("subject", ""),
+        question=data.get("question", ""),
+    )
+    if not rfi:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+
+    return JSONResponse({
+        "rfi_id": rfi.rfi_id,
+        "rfi_number": rfi.rfi_number,
+        "subject": rfi.subject,
+        "status": rfi.status,
+    })
+
+
+@app.post("/api/v1/bids/{project_id}/addenda")
+async def api_add_addendum(project_id: str, request: Request):
+    """Add an addendum to a bid project."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    addendum = bid_dashboard.add_addendum(
+        project_id,
+        description=data.get("description", ""),
+        sheets_affected=data.get("sheets_affected", []),
+        quantity_changes=data.get("quantity_changes", {}),
+    )
+    if not addendum:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+
+    return JSONResponse({
+        "addendum_id": addendum.addendum_id,
+        "addendum_number": addendum.addendum_number,
+        "description": addendum.description,
+    })
+
+
+@app.get("/api/v1/bids/stats/pipeline")
+async def api_bid_pipeline_stats():
+    """Get bid pipeline analytics — win rate, volume, value."""
+    return JSONResponse(bid_dashboard.get_pipeline_stats())
+
+
+# ---------------------------------------------------------------------------
+# AI Plan Reader — BEAM AI "BeamGPT" clone
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/plans/ask")
+async def api_plan_ask(request: Request):
+    """Ask a question about uploaded plans.
+
+    Input JSON:
+    {
+        "question": "What is the specified roof type?",
+        "plan_pages": ["base64_image_1", "base64_image_2"],
+        "context": "Optional project description"
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    question = data.get("question", "")
+    if not question:
+        return JSONResponse({"error": "question required"}, status_code=400)
+
+    pages = data.get("plan_pages", [])
+    if not pages:
+        return JSONResponse(
+            {"error": "plan_pages required (base64 images)"}, status_code=400
+        )
+
+    result = plan_reader.ask(
+        question=question,
+        plan_pages=pages,
+        context=data.get("context", ""),
+    )
+
+    return JSONResponse(plan_reader.question_to_dict(result))
+
+
+@app.post("/api/v1/plans/ask-specs")
+async def api_plan_ask_specs(request: Request):
+    """Ask a question about specification text.
+
+    Input JSON:
+    {
+        "question": "What insulation R-value is required?",
+        "spec_text": "Division 07 — Thermal & Moisture..."
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    result = plan_reader.ask_about_specs(
+        question=data.get("question", ""),
+        spec_text=data.get("spec_text", ""),
+    )
+
+    return JSONResponse(plan_reader.question_to_dict(result))
+
+
+@app.post("/api/v1/plans/compare-addenda")
+async def api_compare_addenda(request: Request):
+    """Compare original vs revised plans — addendum variance report.
+
+    Input JSON:
+    {
+        "original_pages": ["base64_1", "base64_2"],
+        "revised_pages": ["base64_1", "base64_2"],
+        "description": "Addendum #2 — revised elevations",
+        "addendum_number": 2
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    report = plan_reader.compare_addenda(
+        original_pages=data.get("original_pages", []),
+        revised_pages=data.get("revised_pages", []),
+        description=data.get("description", ""),
+        addendum_number=int(data.get("addendum_number", 1)),
+    )
+
+    return JSONResponse(plan_reader.variance_report_to_dict(report))
+
+
+# ---------------------------------------------------------------------------
+# Export — BEAM AI style structured output
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/export/csv")
+async def api_export_csv(request: Request):
+    """Export estimate data as CSV.
+
+    Input: a measurement report or ROM estimate dict.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    source = data.get("source", "measurement_report")
+    if source == "rom_estimate":
+        package = export_engine.from_rom_estimate(data.get("data", {}))
+    else:
+        package = export_engine.from_measurement_report(data.get("data", {}))
+
+    csv_content = export_engine.to_csv(package)
+
+    from fastapi.responses import Response
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={package.project_name or 'export'}.csv"
+        },
+    )
+
+
+@app.post("/api/v1/export/excel")
+async def api_export_excel(request: Request):
+    """Export estimate data as Excel-compatible JSON structure.
+
+    Returns structured data organized by sheet tabs,
+    ready for client-side Excel generation.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    source = data.get("source", "measurement_report")
+    if source == "rom_estimate":
+        package = export_engine.from_rom_estimate(data.get("data", {}))
+    else:
+        package = export_engine.from_measurement_report(data.get("data", {}))
+
+    xlsx_data = export_engine.to_xlsx_data(package)
+    return JSONResponse(xlsx_data)
 
 
 @app.post("/api/v1/feedback")
