@@ -1,7 +1,7 @@
 """
 Envelope Estimator Agent - Main Orchestrator
 
-Three integrated workflows:
+Seven integrated workflows:
 
   1. COMMERCIAL ESTIMATING (ITB → Takeoff → Estimate → Proposal)
      python agent.py --pdf plans.pdf
@@ -11,6 +11,15 @@ Three integrated workflows:
 
   3. PROPERTY LOSS ESTIMATE (Photos → Xactimate-style insurance claim)
      python agent.py --loss-report --address "123 Main St" --photos dmg1.jpg dmg2.jpg
+
+  4. SELF-SERVICE SCAN → 5D ESTIMATE (Customer form → scan link → instant estimate)
+     python agent.py --self-service --customer-name "Jane Doe" --customer-email "jane@example.com" \
+       --address "123 Main St" --project-type residential_roof
+     python agent.py --process-scan --session-id SS-20260224-ABC123 --scan-photos front.jpg back.jpg
+
+  5. LEARNING DASHBOARD (View AI learning engine stats and insights)
+     python agent.py --learning-dashboard
+     python agent.py --record-feedback --estimate-id EST-SS-... --actual-cost 45000
 
 Additional modes:
   python agent.py --monitor          # Continuous email/folder watch
@@ -39,6 +48,17 @@ from modules.pdf_takeoff import PDFTakeoff, TakeoffResult
 from modules.proposal_gen import ProposalGenerator
 from modules.roof_report import RoofReportGenerator, RoofReport
 from modules.property_loss import PropertyLossEstimator, PropertyLossReport
+from modules.self_service_scan import (
+    SelfServiceScanManager,
+    CustomerIntakeForm,
+    ScanSubmission,
+    ScanPhoto,
+    ScanMeasurement,
+    ScanPhotoType,
+    ProjectType,
+    FiveDEstimate,
+)
+from modules.ai_learning_engine import AILearningEngine, FeedbackType
 
 logger = logging.getLogger("envelope_estimator")
 
@@ -61,6 +81,12 @@ class EnvelopeEstimatorAgent:
 
         # Property loss / insurance estimate module
         self.loss_estimator = PropertyLossEstimator(self.settings)
+
+        # Self-service scan → 5D estimate module
+        self.scan_manager = SelfServiceScanManager(self.settings)
+
+        # AI learning engine (feeds from ALL workflows)
+        self.learning = AILearningEngine(self.settings)
 
         # Determine active trades based on enabled phases
         self.active_trades = []
@@ -179,6 +205,28 @@ class EnvelopeEstimatorAgent:
             project, takeoff_result, estimate, proposal
         )
 
+        # Feed into learning engine
+        trade_costs = {
+            ts.trade_name: ts.trade_total for ts in estimate.trade_summaries
+        }
+        self.learning.record_estimate(
+            estimate_id=project.project_id,
+            workflow="commercial",
+            project_type="commercial",
+            total_sf=takeoff_result.building_footprint_sf,
+            roof_sf=0,
+            wall_sf=takeoff_result.net_wall_area_sf,
+            stories=1,
+            roof_pitch=takeoff_result.roof_pitch or "",
+            estimated_materials=estimate.grand_total * 0.45,  # approx split
+            estimated_labor=estimate.grand_total * 0.45,
+            estimated_total=estimate.grand_total,
+            trade_costs=trade_costs,
+            line_item_count=len(takeoff_result.line_items),
+            confidence_score=takeoff_result.confidence_score,
+            data_source="pdf_plans",
+        )
+
         return {
             "project": project,
             "takeoff": takeoff_result,
@@ -227,6 +275,22 @@ class EnvelopeEstimatorAgent:
         print(f"  Materials: ${report.materials.total_cost:,.2f}")
         print(f"  Provider: {report.quality.provider}")
         print(f"  Confidence: {report.quality.confidence_score}%")
+
+        # Feed into learning engine
+        self.learning.record_estimate(
+            estimate_id=report.report_number,
+            workflow="roof_report",
+            project_type="residential_roof",
+            total_sf=report.total_true_area_sqft,
+            roof_sf=report.total_true_area_sqft,
+            estimated_materials=report.materials.total_cost,
+            estimated_total=report.materials.total_cost,
+            confidence_score=report.quality.confidence_score / 100.0,
+            data_source="satellite",
+            city=city,
+            state=state,
+            postal_code=postal_code,
+        )
 
         return report
 
@@ -292,7 +356,262 @@ class EnvelopeEstimatorAgent:
             roof_report=roof_report,
         )
 
+        # Feed into learning engine
+        self.learning.record_estimate(
+            estimate_id=report.claim_number,
+            workflow="loss_report",
+            project_type="insurance_claim",
+            total_sf=report.total_area_sf if hasattr(report, "total_area_sf") else 0,
+            roof_sf=report.roof_area_sf if hasattr(report, "roof_area_sf") else 0,
+            estimated_materials=report.total_materials if hasattr(report, "total_materials") else 0,
+            estimated_labor=report.total_labor if hasattr(report, "total_labor") else 0,
+            estimated_total=report.rcv_total if hasattr(report, "rcv_total") else 0,
+            confidence_score=report.confidence_score if hasattr(report, "confidence_score") else 0,
+            data_source="photos",
+            photo_count=len(photo_paths),
+            city=city,
+            state=state,
+            postal_code=postal_code,
+        )
+
         return report
+
+    # ==================================================================
+    # WORKFLOW 4: Self-Service Scan → 5D Estimate (no salesman needed)
+    # ==================================================================
+
+    def create_self_service_session(
+        self,
+        customer_name: str,
+        customer_email: str,
+        property_address: str,
+        project_type: str = "residential_full_exterior",
+        customer_phone: str = "",
+        city: str = "",
+        state: str = "",
+        postal_code: str = "",
+        project_description: str = "",
+        is_insurance_claim: bool = False,
+        cause_of_loss: str = "",
+        delivery_method: str = "email",
+    ) -> dict:
+        """Create a self-service scan session and send the customer a scan link.
+
+        The customer receives a magic link, takes guided photos of their property,
+        and submits. The system auto-generates a 5D estimate (scope + schedule + cost)
+        without any salesman visiting the site.
+        """
+        print("=" * 60)
+        print("  SELF-SERVICE SCAN → 5D ESTIMATE")
+        print("=" * 60)
+        print(f"  Customer: {customer_name}")
+        print(f"  Email:    {customer_email}")
+        print(f"  Address:  {property_address}")
+        print(f"  Type:     {project_type}")
+        print()
+
+        # Build intake form
+        intake = CustomerIntakeForm(
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=customer_phone,
+            property_address=property_address,
+            city=city,
+            state=state,
+            postal_code=postal_code,
+            project_type=ProjectType(project_type),
+            project_description=project_description,
+            is_insurance_claim=is_insurance_claim,
+            cause_of_loss=cause_of_loss,
+            agreed_to_terms=True,
+        )
+
+        # Create session
+        print("[1/2] Creating scan session...")
+        session = self.scan_manager.create_session(intake)
+        print(f"       Session ID: {session.session_id}")
+        print(f"       Scan Link:  {session.scan_link}")
+        print(f"       Expires:    {session.expires_at}")
+
+        # Send link to customer
+        print(f"\n[2/2] Sending scan link via {delivery_method}...")
+        delivery = self.scan_manager.send_scan_link(session, delivery_method)
+        for channel in delivery.get("channels", []):
+            print(f"       {channel['channel'].upper()}: {channel['status']} → {channel['recipient']}")
+
+        print(f"\nSession created. Customer will receive scan instructions.")
+        print(f"When they submit, run:")
+        print(f"  python agent.py --process-scan --session-id {session.session_id} --scan-photos <photos>")
+
+        return {
+            "session_id": session.session_id,
+            "scan_link": session.scan_link,
+            "expires_at": session.expires_at,
+            "delivery": delivery,
+        }
+
+    def process_self_service_scan(
+        self,
+        session_id: str,
+        photo_paths: list[str],
+        measurements: dict | None = None,
+        notes: str = "",
+    ) -> FiveDEstimate:
+        """Process a completed self-service scan and generate a 5D estimate.
+
+        Called after the customer submits their photos through the scan portal.
+        """
+        print("=" * 60)
+        print("  PROCESSING SELF-SERVICE SCAN → 5D ESTIMATE")
+        print("=" * 60)
+        print(f"  Session: {session_id}")
+        print(f"  Photos:  {len(photo_paths)}")
+        print()
+
+        # Build scan submission
+        photos = []
+        photo_type_cycle = [
+            ScanPhotoType.FRONT_ELEVATION,
+            ScanPhotoType.REAR_ELEVATION,
+            ScanPhotoType.LEFT_ELEVATION,
+            ScanPhotoType.RIGHT_ELEVATION,
+            ScanPhotoType.ROOF_OVERVIEW,
+            ScanPhotoType.CLOSE_UP_DAMAGE,
+            ScanPhotoType.MATERIAL_DETAIL,
+        ]
+        for i, path in enumerate(photo_paths):
+            photo_type = photo_type_cycle[i % len(photo_type_cycle)]
+            photos.append(ScanPhoto(
+                photo_type=photo_type,
+                file_path=path,
+                label=Path(path).stem.replace("_", " ").replace("-", " ").title(),
+                timestamp=datetime.now().isoformat(),
+            ))
+
+        scan_measurements = []
+        if measurements:
+            for field_name, value in measurements.items():
+                scan_measurements.append(ScanMeasurement(
+                    field_name=field_name,
+                    value=str(value),
+                ))
+
+        submission = ScanSubmission(
+            session_id=session_id,
+            photos=photos,
+            measurements=scan_measurements,
+            notes=notes,
+            submitted_at=datetime.now().isoformat(),
+        )
+
+        # Process through the 5D pipeline
+        estimate = self.scan_manager.process_submission(submission)
+
+        print(f"\n{'=' * 60}")
+        print(f"  5D ESTIMATE COMPLETE")
+        print(f"{'=' * 60}")
+        print(f"  Estimate ID:  {estimate.estimate_id}")
+        print(f"  Grand Total:  ${estimate.grand_total:,.2f}")
+        print(f"  Duration:     {estimate.total_project_days} days")
+        print(f"  Labor Hours:  {estimate.total_labor_hours:,.1f}")
+        print(f"  Confidence:   {estimate.confidence_score:.0%}")
+        print(f"  Report:       {estimate.report_html_path}")
+
+        # Feed into learning engine
+        self.learning.record_estimate(
+            estimate_id=estimate.estimate_id,
+            workflow="self_service",
+            project_type=estimate.project_type,
+            total_sf=estimate.total_area_sf,
+            roof_sf=0,
+            wall_sf=estimate.exterior_wall_sf,
+            stories=estimate.stories,
+            roof_pitch=estimate.roof_pitch,
+            estimated_materials=estimate.subtotal_materials,
+            estimated_labor=estimate.subtotal_labor,
+            estimated_total=estimate.grand_total,
+            line_item_count=len(estimate.line_items),
+            estimated_days=estimate.total_project_days,
+            estimated_labor_hours=estimate.total_labor_hours,
+            confidence_score=estimate.confidence_score,
+            data_source="self_service_scan",
+            photo_count=len(photo_paths),
+        )
+
+        return estimate
+
+    # ==================================================================
+    # WORKFLOW 5: Learning Dashboard & Feedback
+    # ==================================================================
+
+    def show_learning_dashboard(self):
+        """Display the AI learning engine dashboard."""
+        print("=" * 60)
+        print("  AI LEARNING ENGINE — DASHBOARD")
+        print("=" * 60)
+
+        dashboard = self.learning.get_dashboard()
+
+        print(f"\n  Estimates Recorded:    {dashboard.total_estimates}")
+        print(f"  Feedback Records:     {dashboard.total_feedback_records}")
+        print(f"  Avg Accuracy:         {dashboard.avg_accuracy:.1f}%")
+        print(f"  Bid Win Rate:         {dashboard.win_rate:.1f}%")
+        print(f"  Avg Client Rating:    {dashboard.avg_client_rating:.1f}/5")
+
+        if dashboard.top_calibration_factors:
+            print(f"\n  Top Calibration Adjustments:")
+            for cf in dashboard.top_calibration_factors:
+                direction = "+" if cf["factor"] > 1.0 else ""
+                print(f"    {cf['dimension']}: {direction}{(cf['factor']-1)*100:.1f}% ({cf['samples']} samples)")
+
+        if dashboard.recent_insights:
+            print(f"\n  Recent Insights:")
+            for insight in dashboard.recent_insights:
+                icon = {"info": "i", "warning": "!", "action_required": "*"}.get(insight["severity"], "-")
+                print(f"    [{icon}] {insight['title']}")
+
+        print(f"\n  Last Analysis: {dashboard.last_analysis_at}")
+        return dashboard
+
+    def record_feedback(
+        self,
+        estimate_id: str,
+        actual_cost: float = 0.0,
+        actual_materials: float = 0.0,
+        actual_labor: float = 0.0,
+        actual_days: int = 0,
+        client_rating: int = 0,
+        won_bid: bool | None = None,
+        lost_reason: str = "",
+        notes: str = "",
+    ):
+        """Record feedback on a past estimate (actual costs, ratings, win/loss)."""
+        feedback_type = FeedbackType.ACTUAL_COST
+        if client_rating > 0:
+            feedback_type = FeedbackType.CLIENT_RATING
+        if won_bid is not None:
+            feedback_type = FeedbackType.WON_LOST
+
+        record = self.learning.record_feedback(
+            estimate_id=estimate_id,
+            feedback_type=feedback_type,
+            actual_total=actual_cost,
+            actual_materials=actual_materials,
+            actual_labor=actual_labor,
+            actual_days=actual_days,
+            client_rating=client_rating,
+            won_bid=won_bid,
+            lost_reason=lost_reason,
+            field_notes=notes,
+        )
+
+        print(f"Feedback recorded: {record.feedback_id}")
+        if record.variance_percent:
+            print(f"  Variance: {record.variance_percent:+.1f}%")
+        if client_rating:
+            print(f"  Rating: {client_rating}/5")
+        if won_bid is not None:
+            print(f"  Bid: {'WON' if won_bid else 'LOST'}")
 
     # ------------------------------------------------------------------
     # Continuous monitoring mode
@@ -448,6 +767,46 @@ def main():
     )
     parser.add_argument("--photos", nargs="+", help="Damage photo file(s)")
 
+    # Workflow 4: Self-service scan → 5D estimate
+    parser.add_argument(
+        "--self-service", action="store_true",
+        help="Create self-service scan session (sends customer a scan link)",
+    )
+    parser.add_argument("--customer-name", help="Customer full name")
+    parser.add_argument("--customer-email", help="Customer email address")
+    parser.add_argument("--customer-phone", help="Customer phone number", default="")
+    parser.add_argument(
+        "--project-type", default="residential_full_exterior",
+        help="Project type (residential_roof, residential_siding, residential_full_exterior, insurance_claim, etc.)",
+    )
+    parser.add_argument("--project-desc", help="Project description", default="")
+    parser.add_argument(
+        "--process-scan", action="store_true",
+        help="Process a submitted self-service scan into a 5D estimate",
+    )
+    parser.add_argument("--session-id", help="Scan session ID to process")
+    parser.add_argument("--scan-photos", nargs="+", help="Scan photo file(s)")
+    parser.add_argument("--scan-notes", help="Customer notes from scan", default="")
+
+    # Workflow 5: Learning engine
+    parser.add_argument(
+        "--learning-dashboard", action="store_true",
+        help="Show AI learning engine dashboard",
+    )
+    parser.add_argument(
+        "--record-feedback", action="store_true",
+        help="Record feedback on a past estimate",
+    )
+    parser.add_argument("--estimate-id", help="Estimate ID for feedback")
+    parser.add_argument("--actual-cost", type=float, help="Actual project cost", default=0)
+    parser.add_argument("--client-rating", type=int, help="Client rating (1-5)", default=0)
+    parser.add_argument("--won", action="store_true", help="Mark bid as won", default=None)
+    parser.add_argument("--lost", help="Mark bid as lost (provide reason)", default=None)
+    parser.add_argument(
+        "--generate-insights", action="store_true",
+        help="Generate AI learning insights from accumulated data",
+    )
+
     # Shared arguments
     parser.add_argument("--address", help="Property address")
     parser.add_argument("--city", help="City", default="")
@@ -479,7 +838,65 @@ def main():
 
     # ---- Workflow routing ----
 
-    if args.roof_report:
+    if args.self_service:
+        if not args.customer_name or not args.customer_email or not args.address:
+            print("Error: --customer-name, --customer-email, and --address are required for --self-service")
+            sys.exit(1)
+        agent.create_self_service_session(
+            customer_name=args.customer_name,
+            customer_email=args.customer_email,
+            customer_phone=args.customer_phone,
+            property_address=args.address,
+            project_type=args.project_type,
+            project_description=args.project_desc,
+            city=args.city,
+            state=args.state,
+            postal_code=args.zip,
+            is_insurance_claim=(args.project_type == "insurance_claim"),
+            cause_of_loss=args.cause or "",
+        )
+
+    elif args.process_scan:
+        if not args.session_id or not args.scan_photos:
+            print("Error: --session-id and --scan-photos are required for --process-scan")
+            sys.exit(1)
+        agent.process_self_service_scan(
+            session_id=args.session_id,
+            photo_paths=args.scan_photos,
+            notes=args.scan_notes,
+        )
+
+    elif args.learning_dashboard:
+        agent.show_learning_dashboard()
+
+    elif args.record_feedback:
+        if not args.estimate_id:
+            print("Error: --estimate-id is required for --record-feedback")
+            sys.exit(1)
+        won_bid = None
+        lost_reason = ""
+        if args.won:
+            won_bid = True
+        elif args.lost is not None:
+            won_bid = False
+            lost_reason = args.lost
+        agent.record_feedback(
+            estimate_id=args.estimate_id,
+            actual_cost=args.actual_cost,
+            client_rating=args.client_rating,
+            won_bid=won_bid,
+            lost_reason=lost_reason,
+        )
+
+    elif args.generate_insights:
+        insights = agent.learning.generate_insights(force=True)
+        print(f"\nGenerated {len(insights)} insights:")
+        for ins in insights:
+            print(f"\n  [{ins.severity.upper()}] {ins.title}")
+            print(f"  {ins.description}")
+            print(f"  → {ins.recommendation}")
+
+    elif args.roof_report:
         if not args.address:
             print("Error: --address is required for --roof-report")
             sys.exit(1)
@@ -546,7 +963,7 @@ def main():
     else:
         parser.print_help()
         print("\n" + "=" * 60)
-        print("  THREE WORKFLOWS:")
+        print("  FIVE WORKFLOWS:")
         print("=" * 60)
         print("\n  1. COMMERCIAL ESTIMATING (plans → proposal):")
         print("     python agent.py --pdf plans.pdf")
@@ -559,8 +976,15 @@ def main():
         print("\n  3. PROPERTY LOSS ESTIMATE (photos → insurance claim):")
         print('     python agent.py --loss-report --address "789 Elm St" --photos dmg1.jpg dmg2.jpg')
         print('     python agent.py --loss-report --address "789 Elm St" --photos *.jpg --cause hail --with-roof')
-        print('     python agent.py --loss-report --address "789 Elm St" --photos *.jpg \\')
-        print('       --cause wind --homeowner "John Doe" --insurance "State Farm" --deductible 2500')
+        print("\n  4. SELF-SERVICE SCAN → 5D ESTIMATE (no salesman needed):")
+        print('     python agent.py --self-service --customer-name "Jane Doe" \\')
+        print('       --customer-email "jane@example.com" --address "123 Main St" --project-type residential_roof')
+        print('     python agent.py --process-scan --session-id SS-20260224-ABC123 --scan-photos front.jpg back.jpg')
+        print("\n  5. AI LEARNING ENGINE:")
+        print("     python agent.py --learning-dashboard")
+        print('     python agent.py --record-feedback --estimate-id EST-SS-... --actual-cost 45000')
+        print('     python agent.py --record-feedback --estimate-id EST-SS-... --won')
+        print("     python agent.py --generate-insights")
 
 
 if __name__ == "__main__":
