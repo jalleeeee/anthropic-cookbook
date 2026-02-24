@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+{% set active_page = "takeoff" %}
+
+{% block title %}PDF Takeoff — Envelope Estimator{% endblock %}
+{% block page_title %}2D Plan Takeoff{% endblock %}
+
+{% block content %}
+<div class="g2">
+  <!-- UPLOAD & CONFIG -->
+  <div>
+    <div class="card mb">
+      <div class="card-header">Upload Construction Plans</div>
+      <div class="card-body">
+        <form id="takeoffForm" enctype="multipart/form-data">
+          <div class="fg">
+            <label>PDF Plan Files *</label>
+            <div id="dropZone" style="border:2px dashed var(--border);border-radius:10px;padding:40px 20px;text-align:center;cursor:pointer;transition:all 0.2s"
+                 onclick="document.getElementById('pdfFiles').click()"
+                 ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--accent-light)'"
+                 ondragleave="this.style.borderColor='var(--border)';this.style.background=''"
+                 ondrop="event.preventDefault();this.style.borderColor='var(--border)';this.style.background='';handleDrop(event)">
+              <div style="font-size:2em;margin-bottom:8px">&#128196;</div>
+              <p style="font-size:0.9em;font-weight:600;color:var(--text-1)">Drop PDF plans here or click to browse</p>
+              <p style="font-size:0.8em;color:var(--text-3);margin-top:4px">Elevations, roof plans, sections, details, schedules</p>
+              <input type="file" id="pdfFiles" name="pdfs" multiple accept=".pdf" style="display:none" onchange="handleFiles(this.files)">
+            </div>
+            <div id="fileList" style="margin-top:12px"></div>
+          </div>
+
+          <div class="fg">
+            <label>Project Name</label>
+            <input class="fi" name="project_name" placeholder="e.g., Smith Residence Re-Roof">
+          </div>
+
+          <div class="fg">
+            <label>Trades to Estimate</label>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px" id="tradeCheckboxes">
+              {% for trade in trades %}
+              <label style="display:flex;align-items:center;gap:5px;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:0.82em;cursor:pointer;transition:all 0.15s"
+                     onchange="this.style.borderColor=this.querySelector('input').checked?'var(--accent)':'var(--border)';this.style.background=this.querySelector('input').checked?'var(--accent-light)':''">
+                <input type="checkbox" name="trades" value="{{ trade.code }}" {% if trade.phase == 1 %}checked{% endif %} style="accent-color:var(--accent)">
+                {{ trade.name }}
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="fr2">
+            <div class="fg">
+              <label>Address (optional — for satellite cross-ref)</label>
+              <input class="fi" name="address" placeholder="123 Main St, Denver, CO">
+            </div>
+            <div class="fg">
+              <label>Homeowner / Client</label>
+              <input class="fi" name="homeowner" placeholder="Client name">
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary" id="runBtn" disabled style="width:100%;justify-content:center;padding:12px">
+            Run AI Takeoff
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- HOW IT WORKS -->
+    <div class="card">
+      <div class="card-header">How the AI Takeoff Works</div>
+      <div class="card-body" style="font-size:0.85em;line-height:1.7;color:var(--text-2)">
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">1</div>
+          <div><strong>Sheet Identification</strong> — Claude Vision scans each page to find elevations, roof plans, sections, and schedules relevant to the envelope.</div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">2</div>
+          <div><strong>Scale Detection & Dimensions</strong> — Reads the drawing scale, extracts footprint, perimeter, wall heights, roof pitch, and all critical dimensions.</div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">3</div>
+          <div><strong>Per-Trade Measurement</strong> — Measures each trade component (siding SF, roofing SQ, gutters LF, windows EA, etc.) from the relevant sheets.</div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">4</div>
+          <div><strong>Window/Door Deductions</strong> — Extracts schedules and deducts openings from gross wall area for net siding quantities.</div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">5</div>
+          <div><strong>Waste & Pitch Adjustments</strong> — Applies trade-specific waste factors and roof pitch multipliers to get adjusted quantities.</div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:14px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">6</div>
+          <div><strong>4-Way Validation</strong> — A second AI model independently verifies quantities to catch errors. Variance flagged if &gt;2%.</div>
+        </div>
+        <div style="display:flex;gap:12px">
+          <div style="width:24px;height:24px;border-radius:50%;background:var(--green-bg);color:var(--green);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75em;flex-shrink:0">7</div>
+          <div><strong>Cost Estimate & Proposal</strong> — Prices every line item via DDC-CWICR, generates a professional bid-ready proposal.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESULTS (shown after processing) -->
+  <div id="resultsPanel" style="display:none">
+    <!-- Progress -->
+    <div class="card mb" id="progressCard">
+      <div class="card-header">Processing</div>
+      <div class="card-body">
+        <div id="progressSteps" style="font-size:0.88em;line-height:2"></div>
+        <div class="pbar" style="margin-top:12px">
+          <div class="pfill" id="progressBar" style="width:0%;background:var(--accent)"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Takeoff Summary -->
+    <div class="card mb" id="summaryCard" style="display:none">
+      <div class="card-header">Takeoff Summary</div>
+      <div class="card-body">
+        <div class="stats" style="margin-bottom:16px">
+          <div class="stat">
+            <div class="stat-label">Sheets Found</div>
+            <div class="stat-val blue" id="resSheets">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Line Items</div>
+            <div class="stat-val" id="resItems">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Confidence</div>
+            <div class="stat-val" id="resConf">0%</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Variance</div>
+            <div class="stat-val" id="resVar">0%</div>
+          </div>
+        </div>
+
+        <!-- Building Dimensions -->
+        <div style="font-weight:700;font-size:0.88em;margin-bottom:8px">Building Dimensions</div>
+        <table class="tbl" style="margin-bottom:20px">
+          <tbody id="dimsTable"></tbody>
+        </table>
+
+        <!-- Line Items -->
+        <div style="font-weight:700;font-size:0.88em;margin-bottom:8px">Takeoff Line Items</div>
+        <table class="tbl">
+          <thead>
+            <tr><th>Trade</th><th>Component</th><th class="r">Raw Qty</th><th class="r">Waste</th><th class="r">Pitch</th><th class="r">Adjusted Qty</th><th>Unit</th></tr>
+          </thead>
+          <tbody id="lineItemsTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Cost Estimate -->
+    <div class="card mb" id="estimateCard" style="display:none">
+      <div class="card-header">
+        Cost Estimate
+        <span id="resTotalBadge" class="pill pill-green" style="font-size:0.9em"></span>
+      </div>
+      <div class="card-body">
+        <table class="tbl">
+          <thead>
+            <tr><th>Trade</th><th class="r">Total</th></tr>
+          </thead>
+          <tbody id="tradeEstTable"></tbody>
+          <tfoot>
+            <tr style="font-weight:700;border-top:2px solid var(--border)">
+              <td>Grand Total</td>
+              <td class="r" id="resGrandTotal" style="font-size:1.1em;color:var(--green)"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- Proposal Link -->
+    <div class="card" id="proposalCard" style="display:none">
+      <div class="card-body" style="text-align:center;padding:28px">
+        <div style="font-size:1.4em;margin-bottom:8px">&#9989;</div>
+        <div style="font-weight:700;font-size:1.05em;margin-bottom:4px">Estimate Complete</div>
+        <div style="font-size:0.88em;color:var(--text-2);margin-bottom:16px">
+          Proposal generated and ready for review.
+        </div>
+        <a id="proposalLink" href="#" class="btn btn-primary">View Full Proposal</a>
+        <a id="estimateLink" href="#" class="btn btn-ghost" style="margin-left:8px">View in Estimates</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let selectedFiles = [];
+
+function handleDrop(e) {
+  const files = e.dataTransfer.files;
+  handleFiles(files);
+}
+
+function handleFiles(files) {
+  selectedFiles = Array.from(files).filter(f => f.type === 'application/pdf');
+  renderFileList();
+  document.getElementById('runBtn').disabled = selectedFiles.length === 0;
+}
+
+function renderFileList() {
+  const list = document.getElementById('fileList');
+  if (selectedFiles.length === 0) { list.innerHTML = ''; return; }
+  list.innerHTML = selectedFiles.map((f, i) =>
+    `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--accent-light);border-radius:6px;margin-bottom:4px;font-size:0.84em">
+      <span style="color:var(--accent);font-weight:600">PDF</span>
+      <span>${f.name}</span>
+      <span style="color:var(--text-3);margin-left:auto">${(f.size/1024/1024).toFixed(1)} MB</span>
+      <button onclick="removeFile(${i})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:1.1em">&times;</button>
+    </div>`
+  ).join('');
+}
+
+function removeFile(i) {
+  selectedFiles.splice(i, 1);
+  renderFileList();
+  document.getElementById('runBtn').disabled = selectedFiles.length === 0;
+}
+
+function setProgress(step, pct) {
+  const steps = document.getElementById('progressSteps');
+  const bar = document.getElementById('progressBar');
+  steps.innerHTML += `<div>${step}</div>`;
+  bar.style.width = pct + '%';
+  steps.scrollTop = steps.scrollHeight;
+}
+
+document.getElementById('takeoffForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+
+  // Show results panel
+  document.getElementById('resultsPanel').style.display = 'block';
+  document.getElementById('progressCard').style.display = 'block';
+  document.getElementById('progressSteps').innerHTML = '';
+
+  setProgress('Uploading PDFs...', 5);
+
+  const form = new FormData();
+  selectedFiles.forEach(f => form.append('pdfs', f));
+  form.append('project_name', this.project_name.value);
+  form.append('address', this.address.value || '');
+  form.append('homeowner', this.homeowner.value || '');
+
+  // Gather selected trades
+  const trades = [];
+  this.querySelectorAll('input[name="trades"]:checked').forEach(cb => trades.push(cb.value));
+  form.append('trade_codes', trades.join(','));
+
+  setProgress('Sending to AI takeoff engine...', 15);
+
+  try {
+    const resp = await fetch('/api/v1/takeoff/upload', { method: 'POST', body: form });
+    const data = await resp.json();
+
+    if (data.success) {
+      setProgress('Sheet identification complete', 30);
+      setProgress('Building dimensions extracted', 50);
+      setProgress('Per-trade measurements complete', 70);
+      setProgress('Validation pass complete', 85);
+      setProgress('Cost estimate generated', 95);
+      setProgress('Done!', 100);
+
+      // Populate summary
+      document.getElementById('resSheets').textContent = data.takeoff.sheets_count;
+      document.getElementById('resItems').textContent = data.takeoff.line_items_count;
+      document.getElementById('resConf').textContent = Math.round(data.takeoff.confidence * 100) + '%';
+      document.getElementById('resVar').textContent = data.takeoff.variance.toFixed(1) + '%';
+
+      // Building dims
+      const dims = data.takeoff.building_dims;
+      const dimsTable = document.getElementById('dimsTable');
+      dimsTable.innerHTML = '';
+      for (const [k, v] of Object.entries(dims)) {
+        dimsTable.innerHTML += `<tr><td style="font-weight:600">${k.replace(/_/g, ' ')}</td><td>${v}</td></tr>`;
+      }
+
+      // Line items
+      const lineTable = document.getElementById('lineItemsTable');
+      lineTable.innerHTML = '';
+      data.takeoff.line_items.forEach(li => {
+        lineTable.innerHTML += `<tr>
+          <td><span class="pill pill-blue">${li.trade}</span></td>
+          <td>${li.component}</td>
+          <td class="r">${li.raw_qty.toLocaleString(undefined,{maximumFractionDigits:1})}</td>
+          <td class="r">${(li.waste * 100).toFixed(0)}%</td>
+          <td class="r">${li.pitch.toFixed(3)}</td>
+          <td class="r" style="font-weight:700">${li.adjusted_qty.toLocaleString(undefined,{maximumFractionDigits:1})}</td>
+          <td>${li.unit}</td>
+        </tr>`;
+      });
+
+      document.getElementById('summaryCard').style.display = 'block';
+
+      // Cost estimate
+      if (data.estimate) {
+        const estTable = document.getElementById('tradeEstTable');
+        estTable.innerHTML = '';
+        data.estimate.trades.forEach(t => {
+          estTable.innerHTML += `<tr><td>${t.name}</td><td class="r">$${t.total.toLocaleString(undefined,{minimumFractionDigits:2})}</td></tr>`;
+        });
+        document.getElementById('resGrandTotal').textContent = '$' + data.estimate.grand_total.toLocaleString(undefined, {minimumFractionDigits:2});
+        document.getElementById('resTotalBadge').textContent = '$' + data.estimate.grand_total.toLocaleString(undefined, {minimumFractionDigits:2});
+        document.getElementById('estimateCard').style.display = 'block';
+      }
+
+      // Proposal link
+      if (data.proposal) {
+        document.getElementById('proposalLink').href = data.proposal.html || '#';
+        document.getElementById('estimateLink').href = '/estimates/' + data.project_id;
+        document.getElementById('proposalCard').style.display = 'block';
+      }
+
+      btn.textContent = 'Takeoff Complete';
+      btn.style.background = 'var(--green)';
+
+    } else {
+      setProgress('Error: ' + (data.detail || 'Processing failed'), 0);
+      btn.disabled = false;
+      btn.textContent = 'Run AI Takeoff';
+    }
+  } catch (err) {
+    setProgress('Network error: ' + err.message, 0);
+    btn.disabled = false;
+    btn.textContent = 'Run AI Takeoff';
+  }
+});
+</script>
+{% endblock %}

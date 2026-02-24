@@ -5,6 +5,7 @@ FastAPI web app wrapping all 5 estimation workflows into a browser-based platfor
 
 Endpoints:
   /                          → Main dashboard
+  /takeoff                   → 2D Plan Takeoff (upload PDFs → AI reads drawings → 5D estimate)
   /self-service              → Customer intake form (public-facing)
   /scan/{session_id}         → Customer scan portal (guided photo upload)
   /estimates                 → All estimates list
@@ -34,6 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from config.settings import load_settings
+from config.trades import ALL_TRADES, TRADE_BY_CODE, PHASE_1_TRADES, PHASE_2_TRADES
+from modules.itb_intake import ITBIntake, ProjectInfo
+from modules.pdf_takeoff import PDFTakeoff, TakeoffResult
+from modules.cost_engine import CostEngine, EstimateResult
+from modules.proposal_gen import ProposalGenerator
 from modules.self_service_scan import (
     CustomerIntakeForm,
     FiveDEstimate,
@@ -74,6 +80,10 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Module instances
 scan_manager = SelfServiceScanManager(settings)
 learning_engine = AILearningEngine(settings)
+pdf_takeoff = PDFTakeoff(settings)
+cost_engine = CostEngine(settings)
+proposal_gen = ProposalGenerator(settings)
+itb_intake = ITBIntake(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +259,23 @@ async def learning_dashboard(request: Request):
     })
 
 
+@app.get("/takeoff", response_class=HTMLResponse)
+async def takeoff_page(request: Request):
+    """2D Plan Takeoff — upload PDFs and run the full envelope takeoff pipeline."""
+    trade_list = [
+        {
+            "code": t.code,
+            "name": t.name,
+            "phase": 1 if t.code in [tt.code for tt in PHASE_1_TRADES] else 2,
+        }
+        for t in ALL_TRADES
+    ]
+    return templates.TemplateResponse("takeoff.html", {
+        "request": request,
+        "trades": trade_list,
+    })
+
+
 # ---------------------------------------------------------------------------
 # API ROUTES — JSON endpoints for programmatic access + AJAX
 # ---------------------------------------------------------------------------
@@ -393,6 +420,159 @@ async def api_submit_scan(
         "confidence": estimate.confidence_score,
         "report_url": f"/estimates/{estimate.estimate_id}",
         "line_items": len(estimate.line_items),
+    })
+
+
+@app.post("/api/v1/takeoff/upload")
+async def api_takeoff_upload(
+    project_name: str = Form(""),
+    address: str = Form(""),
+    homeowner: str = Form(""),
+    trade_codes: str = Form(""),
+    pdfs: list[UploadFile] = File(...),
+):
+    """Run the full PDF takeoff → cost estimate → proposal pipeline.
+
+    This is the CORE workflow: upload 2D construction drawings (PDF), and the AI
+    reads every sheet to extract envelope quantities, prices them via DDC-CWICR,
+    and generates a bid-ready proposal.
+    """
+    if not pdfs:
+        raise HTTPException(status_code=400, detail="At least one PDF is required")
+
+    # Save uploaded PDFs
+    project_id = f"TKO-{secrets.token_hex(4).upper()}"
+    upload_dir = STATIC_DIR / "uploads" / project_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    pdf_paths = []
+    for pdf_file in pdfs:
+        safe_name = re.sub(r'[^\w.\-]', '_', pdf_file.filename or "plan.pdf")
+        save_path = upload_dir / safe_name
+        content = await pdf_file.read()
+        save_path.write_bytes(content)
+        pdf_paths.append(str(save_path))
+
+    # Resolve selected trades
+    selected_codes = [c.strip() for c in trade_codes.split(",") if c.strip()]
+    if selected_codes:
+        trades = [TRADE_BY_CODE[c] for c in selected_codes if c in TRADE_BY_CODE]
+    else:
+        trades = list(PHASE_1_TRADES)  # Default to Phase 1 envelope trades
+
+    # Create project info via ITB intake
+    project = itb_intake.process_api_submission(
+        project_name=project_name or f"Takeoff {project_id}",
+        pdf_paths=pdf_paths,
+        metadata={
+            "address": address,
+            "homeowner": homeowner,
+            "source": "web_upload",
+        },
+    )
+    project.project_id = project_id
+    if address:
+        parts = address.split(",")
+        project.project_address = parts[0].strip() if parts else address
+        if len(parts) >= 2:
+            project.project_city = parts[1].strip()
+        if len(parts) >= 3:
+            project.project_state = parts[2].strip()
+
+    # Step 1: Run PDF takeoff (Claude Vision reads every sheet)
+    takeoff_result = pdf_takeoff.process(
+        pdf_paths=pdf_paths,
+        trades=trades,
+        project_id=project_id,
+    )
+
+    # Step 2: Run cost engine (DDC-CWICR pricing)
+    estimate_result = cost_engine.estimate(
+        takeoff=takeoff_result,
+        trades=trades,
+    )
+
+    # Step 3: Generate proposal
+    proposal = proposal_gen.generate(
+        project=project,
+        takeoff=takeoff_result,
+        estimate=estimate_result,
+        include_detail=True,
+    )
+
+    # Step 4: Record in learning engine
+    total_sf = takeoff_result.building_footprint_sf or 1.0
+    learning_engine.record_estimate(
+        estimate_id=project_id,
+        workflow="pdf_takeoff",
+        project_type=project.project_type or "envelope",
+        total_sf=total_sf,
+        wall_sf=takeoff_result.net_wall_area_sf,
+        stories=takeoff_result.story_count,
+        roof_pitch=takeoff_result.roof_pitch,
+        estimated_materials=estimate_result.total_material,
+        estimated_labor=estimate_result.total_labor,
+        estimated_total=estimate_result.grand_total,
+        line_item_count=len(takeoff_result.line_items),
+        confidence_score=takeoff_result.confidence_score,
+        data_source="pdf_blueprint",
+        state=project.project_state,
+        region=project.project_state,
+    )
+
+    # Build JSON response
+    return JSONResponse({
+        "success": True,
+        "project_id": project_id,
+        "takeoff": {
+            "sheets_count": len(takeoff_result.sheets_identified),
+            "line_items_count": len(takeoff_result.line_items),
+            "confidence": takeoff_result.confidence_score,
+            "variance": takeoff_result.validation_variance_pct,
+            "building_dims": {
+                "footprint_sf": takeoff_result.building_footprint_sf,
+                "perimeter_lf": takeoff_result.building_perimeter_lf,
+                "wall_height_ft": takeoff_result.wall_height_ft,
+                "stories": takeoff_result.story_count,
+                "gross_wall_sf": takeoff_result.gross_wall_area_sf,
+                "window_deductions_sf": takeoff_result.window_deductions_sf,
+                "door_deductions_sf": takeoff_result.door_deductions_sf,
+                "net_wall_sf": takeoff_result.net_wall_area_sf,
+                "roof_pitch": takeoff_result.roof_pitch,
+                "roof_pitch_multiplier": takeoff_result.roof_pitch_multiplier,
+            },
+            "line_items": [
+                {
+                    "trade": li.trade_name,
+                    "component": li.component_name,
+                    "raw_qty": li.raw_quantity,
+                    "waste": li.waste_factor,
+                    "pitch": li.pitch_multiplier,
+                    "adjusted_qty": li.adjusted_quantity,
+                    "unit": li.unit,
+                    "notes": li.notes,
+                }
+                for li in takeoff_result.line_items
+            ],
+            "warnings": takeoff_result.warnings,
+        },
+        "estimate": {
+            "trades": [
+                {
+                    "code": ts.trade_code,
+                    "name": ts.trade_name,
+                    "material": ts.subtotal_material,
+                    "labor": ts.subtotal_labor,
+                    "total": ts.trade_total,
+                }
+                for ts in estimate_result.trade_summaries
+            ],
+            "total_material": estimate_result.total_material,
+            "total_labor": estimate_result.total_labor,
+            "grand_total": estimate_result.grand_total,
+            "cost_per_sf": estimate_result.cost_per_sf,
+        },
+        "proposal": proposal,
     })
 
 
