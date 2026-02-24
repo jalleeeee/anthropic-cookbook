@@ -6,3 +6,4 @@ from modules.proposal_gen import ProposalGenerator
 from modules.roof_report import RoofReportGenerator, RoofReport
 from modules.self_service_scan import SelfServiceScanManager, FiveDEstimate
 from modules.ai_learning_engine import AILearningEngine
+from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantities

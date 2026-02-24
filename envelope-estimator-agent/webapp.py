@@ -40,6 +40,7 @@ from modules.itb_intake import ITBIntake, ProjectInfo
 from modules.pdf_takeoff import PDFTakeoff, TakeoffResult
 from modules.cost_engine import CostEngine, EstimateResult
 from modules.proposal_gen import ProposalGenerator
+from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantities
 from modules.self_service_scan import (
     CustomerIntakeForm,
     FiveDEstimate,
@@ -84,6 +85,7 @@ pdf_takeoff = PDFTakeoff(settings)
 cost_engine = CostEngine(settings)
 proposal_gen = ProposalGenerator(settings)
 itb_intake = ITBIntake(settings)
+deductive = DeductiveEngine()
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +581,109 @@ async def api_takeoff_upload(
             "cost_per_sf": estimate_result.cost_per_sf,
         },
         "proposal": proposal,
+    })
+
+
+@app.post("/api/v1/deductive/derive")
+async def api_deductive_derive(request: Request):
+    """Deductive Ratio Engine — derive all envelope quantities from seed values.
+
+    Instead of pixel measurement, the AI reads labeled dimensions from plans
+    and this engine mathematically derives every quantity using industry ratios.
+
+    Returns per-building quantities + AIA G703 Schedule of Values.
+    """
+    body = await request.json()
+    buildings_input = body.get("buildings", [body])
+
+    results = []
+    for bldg in buildings_input:
+        seeds = SeedValues(
+            building_id=bldg.get("building_id", "Building A"),
+            footprint_sf=float(bldg.get("footprint_sf", 0)),
+            stories_above_grade=int(bldg.get("stories_above_grade", 0)),
+            stories_below_grade=int(bldg.get("stories_below_grade", 0)),
+            footprint_length_ft=float(bldg.get("footprint_length_ft", 0)),
+            footprint_width_ft=float(bldg.get("footprint_width_ft", 0)),
+            perimeter_lf=float(bldg.get("perimeter_lf", 0)),
+            floor_to_floor_ft=float(bldg.get("floor_to_floor_ft", 0)),
+            total_building_height_ft=float(bldg.get("total_building_height_ft", 0)),
+            parapet_height_ft=float(bldg.get("parapet_height_ft", 0)),
+            unit_count=int(bldg.get("unit_count", 0)),
+            unit_mix=bldg.get("unit_mix", {}),
+            roof_pitch=bldg.get("roof_pitch", "flat"),
+            roof_type=bldg.get("roof_type", "TPO membrane"),
+            building_shape=bldg.get("building_shape", "typical_multifamily"),
+            construction_type=bldg.get("construction_type", "V-A"),
+            has_podium=bldg.get("has_podium", False),
+            podium_height_ft=float(bldg.get("podium_height_ft", 0)),
+            primary_cladding=bldg.get("primary_cladding", "fiber_cement_lap"),
+            secondary_cladding=bldg.get("secondary_cladding", ""),
+            secondary_cladding_floors=bldg.get("secondary_cladding_floors", ""),
+            corridor_type=bldg.get("corridor_type", "interior"),
+            balcony_count=int(bldg.get("balcony_count", 0)),
+            avg_balcony_sf=float(bldg.get("avg_balcony_sf", 60)),
+            window_count_from_schedule=int(bldg.get("window_count_from_schedule", 0)),
+            door_count_from_schedule=int(bldg.get("door_count_from_schedule", 0)),
+        )
+
+        derived = deductive.derive(seeds)
+        sov = deductive.generate_schedule_of_values(seeds, derived)
+
+        results.append({
+            "building_id": seeds.building_id,
+            "seeds_used": {
+                "footprint_sf": seeds.footprint_sf,
+                "stories": seeds.stories_above_grade,
+                "unit_count": seeds.unit_count,
+                "perimeter_lf": seeds.perimeter_lf or derived.perimeter_lf,
+            },
+            "derived": {
+                "perimeter_lf": derived.perimeter_lf,
+                "total_height_ft": derived.total_building_height_ft,
+                "gross_wall_sf": derived.gross_wall_area_sf,
+                "net_wall_sf": derived.net_wall_area_sf,
+                "net_to_gross_ratio": derived.net_to_gross_ratio,
+                "window_count": derived.window_count,
+                "ext_door_count": derived.ext_door_count,
+                "sgd_count": derived.sgd_count,
+                "primary_cladding_sf": derived.primary_cladding_sf,
+                "secondary_cladding_sf": derived.secondary_cladding_sf,
+                "wrb_sf": derived.wrb_air_barrier_sf,
+                "roof_area_sf": derived.roof_area_actual_sf,
+                "gutter_lf": derived.gutter_lf,
+                "downspout_lf": derived.downspout_lf,
+                "balcony_count": derived.balcony_count,
+                "balcony_wp_sf": derived.balcony_waterproofing_sf,
+                "balcony_railing_lf": derived.balcony_railing_lf,
+                "coping_lf": derived.coping_lf,
+                "sealant_lf": derived.perimeter_sealant_lf,
+            },
+            "derivation_log": derived.derivation_log,
+            "confidence_notes": derived.confidence_notes,
+            "schedule_of_values": {
+                "building_id": sov.building_id,
+                "total_value": sov.total_value,
+                "items": [
+                    {
+                        "item": i.item_number,
+                        "description": i.description,
+                        "csi": i.csi_division,
+                        "qty": i.quantity,
+                        "unit": i.unit,
+                        "unit_price": i.unit_price,
+                        "value": i.scheduled_value,
+                    }
+                    for i in sov.items
+                ],
+            },
+        })
+
+    return JSONResponse({
+        "success": True,
+        "building_count": len(results),
+        "buildings": results,
+        "project_total": sum(r["schedule_of_values"]["total_value"] for r in results),
     })
 
 
