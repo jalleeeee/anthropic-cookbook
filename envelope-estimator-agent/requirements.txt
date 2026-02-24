@@ -22,5 +22,11 @@ requests>=2.31.0           # Google APIs (Solar, Maps, Geocoding)
 tifffile>=2024.1.0         # GeoTIFF parsing
 numpy>=1.26.0              # Array processing for DSM analysis
 
+# Web application
+fastapi>=0.115.0           # Web framework
+uvicorn[standard]>=0.30.0  # ASGI server
+jinja2>=3.1.0              # HTML templating
+python-multipart>=0.0.9    # File upload support
+
 # Utilities
 python-dotenv>=1.0.0       # .env file loading

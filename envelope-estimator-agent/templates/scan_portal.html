@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Property Scan — Envelope Estimator</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  :root { --accent:#2563eb; --green:#16a34a; --text-1:#111827; --text-2:#4b5563; --text-3:#9ca3af; --border:#e5e7eb; --bg:#f5f6f8; --card:#fff; }
+  * { margin:0;padding:0;box-sizing:border-box; }
+  body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--text-1); min-height:100vh; }
+
+  .scan-header {
+    background:linear-gradient(135deg,#111218,#1e293b); color:#fff;
+    padding:24px 20px; text-align:center;
+  }
+  .scan-header h1 { font-size:1.2em; font-weight:700; }
+  .scan-header p { font-size:0.85em; opacity:0.8; margin-top:4px; }
+
+  .scan-body { max-width:600px; margin:0 auto; padding:20px; }
+
+  .step-card {
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    margin-bottom:16px; overflow:hidden;
+  }
+  .step-header {
+    padding:14px 18px; display:flex; align-items:center; gap:12px;
+    border-bottom:1px solid var(--border); cursor:pointer;
+  }
+  .step-num {
+    width:28px; height:28px; border-radius:50%; background:#eff4ff; color:var(--accent);
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.8em; flex-shrink:0;
+  }
+  .step-num.done { background:#dcfce7; color:var(--green); }
+  .step-title { font-weight:600; font-size:0.9em; }
+  .step-status { margin-left:auto; font-size:0.75em; color:var(--text-3); }
+
+  .step-body { padding:16px 18px; display:none; }
+  .step-body.open { display:block; }
+
+  .photo-upload-area {
+    border:2px dashed var(--border); border-radius:10px; padding:32px 20px;
+    text-align:center; cursor:pointer; transition:all 0.2s; margin-bottom:12px;
+  }
+  .photo-upload-area:hover { border-color:var(--accent); background:#fafbff; }
+  .photo-upload-area .icon { font-size:2em; margin-bottom:8px; }
+  .photo-upload-area p { font-size:0.85em; color:var(--text-2); }
+  .photo-upload-area .hint { font-size:0.75em; color:var(--text-3); margin-top:4px; }
+
+  .photo-instruction {
+    background:#f8fafc; border:1px solid var(--border); border-radius:8px;
+    padding:12px 14px; margin-bottom:10px; font-size:0.84em; line-height:1.5;
+  }
+  .photo-instruction strong { color:var(--text-1); }
+  .photo-instruction .tip { color:var(--text-3); font-size:0.9em; }
+
+  .photo-preview {
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(80px,1fr));
+    gap:8px; margin-top:12px;
+  }
+  .photo-thumb {
+    width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px;
+    border:1px solid var(--border);
+  }
+
+  .fg { margin-bottom:14px; }
+  .fg label { display:block; font-size:0.8em; font-weight:600; color:var(--text-2); margin-bottom:4px; }
+  .fi {
+    width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:8px;
+    font-size:0.88em; outline:none; font-family:inherit;
+  }
+  .fi:focus { border-color:var(--accent); }
+
+  .btn-submit {
+    display:block; width:100%; padding:14px; background:var(--accent); color:#fff;
+    border:none; border-radius:10px; font-size:0.95em; font-weight:700;
+    cursor:pointer; transition:all 0.15s; font-family:inherit;
+  }
+  .btn-submit:hover { background:#1d4ed8; }
+  .btn-submit:disabled { background:var(--text-3); cursor:not-allowed; }
+
+  .progress-bar { background:var(--border); border-radius:6px; height:6px; margin:16px 0; overflow:hidden; }
+  .progress-fill { height:100%; background:var(--accent); border-radius:6px; transition:width 0.3s; }
+
+  .result-card {
+    background:var(--card); border:2px solid var(--green); border-radius:12px;
+    padding:28px; text-align:center; display:none;
+  }
+  .result-card h2 { color:var(--green); margin-bottom:8px; }
+  .result-card .amount { font-size:2em; font-weight:800; color:var(--text-1); }
+  .result-card .meta { font-size:0.85em; color:var(--text-2); margin-top:12px; }
+</style>
+</head>
+<body>
+
+<div class="scan-header">
+  <h1>Property Scan</h1>
+  <p>{{ config.customer_name }} &middot; {{ config.property_address }}</p>
+</div>
+
+<div class="scan-body">
+  <div class="progress-bar"><div class="progress-fill" id="progress" style="width:0%"></div></div>
+
+  <form id="scanForm" enctype="multipart/form-data">
+    <input type="hidden" name="token" value="{{ token }}">
+
+    <!-- STEP 1: Photos -->
+    <div class="step-card">
+      <div class="step-header" onclick="toggleStep(1)">
+        <div class="step-num" id="stepNum1">1</div>
+        <div class="step-title">Take Photos</div>
+        <div class="step-status" id="stepStatus1">{{ config.required_photos|length }} required</div>
+      </div>
+      <div class="step-body open" id="stepBody1">
+        <p style="font-size:0.84em;color:var(--text-2);margin-bottom:14px">
+          {{ config.instructions.welcome }}<br>
+          <strong>Estimated time: {{ config.instructions.time_estimate }}</strong>
+        </p>
+
+        {% for photo in config.required_photos %}
+        <div class="photo-instruction">
+          <strong>{{ photo.label }}</strong> <span style="color:var(--accent);font-size:0.8em">(Required)</span><br>
+          {% if photo.instructions is defined %}
+          <span class="tip">{{ photo.instructions }}</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+
+        {% for photo in config.optional_photos %}
+        <div class="photo-instruction" style="border-style:dashed">
+          <strong>{{ photo.label }}</strong> <span style="color:var(--text-3);font-size:0.8em">(Optional)</span>
+        </div>
+        {% endfor %}
+
+        <div class="photo-upload-area" onclick="document.getElementById('photoInput').click()">
+          <div class="icon">&#128247;</div>
+          <p>Tap to take photos or select from gallery</p>
+          <p class="hint">Minimum {{ config.min_required_photos }} photos required</p>
+          <input type="file" id="photoInput" name="photos" multiple accept="image/*" capture="environment"
+                 style="display:none" onchange="handlePhotos(this)">
+        </div>
+        <div class="photo-preview" id="photoPreview"></div>
+      </div>
+    </div>
+
+    <!-- STEP 2: Measurements -->
+    <div class="step-card">
+      <div class="step-header" onclick="toggleStep(2)">
+        <div class="step-num" id="stepNum2">2</div>
+        <div class="step-title">Basic Measurements</div>
+        <div class="step-status" id="stepStatus2">Quick info</div>
+      </div>
+      <div class="step-body" id="stepBody2">
+        <div class="fg">
+          <label>Approximate Square Footage</label>
+          <input class="fi" name="approx_square_footage" type="number" placeholder="e.g., 2400">
+        </div>
+        <div class="fg">
+          <label>Number of Stories</label>
+          <input class="fi" name="number_of_stories" type="number" placeholder="e.g., 2" min="1" max="5">
+        </div>
+        <div class="fg">
+          <label>Approximate Window Count</label>
+          <input class="fi" name="window_count_approx" type="number" placeholder="e.g., 15">
+        </div>
+        <div class="fg">
+          <label>Exterior Door Count</label>
+          <input class="fi" name="exterior_door_count" type="number" placeholder="e.g., 3">
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 3: Notes -->
+    <div class="step-card">
+      <div class="step-header" onclick="toggleStep(3)">
+        <div class="step-num" id="stepNum3">3</div>
+        <div class="step-title">Additional Notes</div>
+        <div class="step-status" id="stepStatus3">Optional</div>
+      </div>
+      <div class="step-body" id="stepBody3">
+        <div class="fg">
+          <label>Anything else we should know?</label>
+          <textarea class="fi" name="notes" rows="4" placeholder="e.g., damage on the north side, want to upgrade to metal roof, budget constraints..."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-submit" id="submitBtn" disabled>
+      Submit Scan &amp; Generate Estimate
+    </button>
+    <p style="text-align:center;font-size:0.75em;color:var(--text-3);margin-top:10px">
+      Your photos are processed securely by AI. Estimate typically generates within 2 minutes.
+    </p>
+  </form>
+
+  <!-- RESULT -->
+  <div class="result-card" id="resultCard">
+    <h2>Your Estimate is Ready!</h2>
+    <div class="amount" id="resultAmount">$0.00</div>
+    <div class="meta">
+      <span id="resultDays"></span> estimated project days &middot;
+      <span id="resultConfidence"></span> confidence<br>
+      <span id="resultItems"></span> line items
+    </div>
+    <a id="resultLink" href="#" class="btn-submit" style="display:inline-block;margin-top:16px;text-decoration:none;max-width:300px">
+      View Full Estimate
+    </a>
+  </div>
+</div>
+
+<script>
+let photoCount = 0;
+const minPhotos = {{ config.min_required_photos }};
+
+function toggleStep(n) {
+  const body = document.getElementById('stepBody' + n);
+  body.classList.toggle('open');
+}
+
+function handlePhotos(input) {
+  const preview = document.getElementById('photoPreview');
+  photoCount = input.files.length;
+
+  preview.innerHTML = '';
+  for (const file of input.files) {
+    const img = document.createElement('img');
+    img.className = 'photo-thumb';
+    img.src = URL.createObjectURL(file);
+    preview.appendChild(img);
+  }
+
+  document.getElementById('stepStatus1').textContent = `${photoCount} photo(s)`;
+  if (photoCount >= minPhotos) {
+    document.getElementById('stepNum1').classList.add('done');
+    document.getElementById('stepNum1').textContent = '\u2713';
+  }
+
+  updateProgress();
+  document.getElementById('submitBtn').disabled = photoCount < minPhotos;
+}
+
+function updateProgress() {
+  let pct = 0;
+  if (photoCount >= minPhotos) pct += 60;
+  else if (photoCount > 0) pct += (photoCount / minPhotos) * 60;
+
+  const sf = document.querySelector('[name="approx_square_footage"]').value;
+  if (sf) pct += 20;
+  const stories = document.querySelector('[name="number_of_stories"]').value;
+  if (stories) pct += 20;
+
+  document.getElementById('progress').style.width = pct + '%';
+}
+
+document.querySelectorAll('.fi').forEach(el => el.addEventListener('input', updateProgress));
+
+document.getElementById('scanForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Processing with AI... please wait';
+
+  const form = new FormData(this);
+
+  try {
+    const resp = await fetch('/api/v1/scan/{{ session_id }}/submit', { method:'POST', body:form });
+    const data = await resp.json();
+
+    if (data.success) {
+      document.getElementById('scanForm').style.display = 'none';
+      document.getElementById('progress').style.width = '100%';
+
+      const result = document.getElementById('resultCard');
+      result.style.display = 'block';
+      document.getElementById('resultAmount').textContent = '$' + data.grand_total.toLocaleString(undefined, {minimumFractionDigits:2});
+      document.getElementById('resultDays').textContent = data.total_days;
+      document.getElementById('resultConfidence').textContent = Math.round(data.confidence * 100) + '%';
+      document.getElementById('resultItems').textContent = data.line_items;
+      document.getElementById('resultLink').href = data.report_url;
+    } else {
+      alert('Error: ' + (data.detail || 'Processing failed'));
+      btn.disabled = false;
+      btn.textContent = 'Submit Scan & Generate Estimate';
+    }
+  } catch (err) {
+    alert('Network error: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Submit Scan & Generate Estimate';
+  }
+});
+</script>
+</body>
+</html>

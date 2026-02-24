@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% set active_page = "estimates" %}
+
+{% block title %}Estimate {{ estimate_id }} — Envelope Estimator{% endblock %}
+{% block page_title %}Estimate Detail{% endblock %}
+
+{% block topbar_actions %}
+<a href="/estimates" class="btn btn-ghost btn-sm">&larr; All Estimates</a>
+{% endblock %}
+
+{% block content %}
+{% if report_html %}
+  <!-- If we have a full 5D HTML report, render it in an iframe -->
+  <div class="card mb">
+    <div class="card-header">
+      5D Estimate Report — {{ estimate_id }}
+      <button class="btn btn-ghost btn-sm" onclick="printReport()">Print / PDF</button>
+    </div>
+    <div class="card-body" style="padding:0">
+      <iframe id="reportFrame" srcdoc="{{ report_html | e }}"
+              style="width:100%;min-height:900px;border:none;border-radius:0 0 10px 10px"></iframe>
+    </div>
+  </div>
+{% endif %}
+
+{% if learning_record %}
+  <!-- Learning engine record data -->
+  <div class="g2 mb">
+    <div class="card">
+      <div class="card-header">Estimate Summary</div>
+      <div class="card-body">
+        <table class="tbl">
+          <tr><td style="font-weight:600;width:40%">Estimate ID</td><td>{{ learning_record.estimate_id }}</td></tr>
+          <tr><td style="font-weight:600">Workflow</td><td>{{ learning_record.workflow }}</td></tr>
+          <tr><td style="font-weight:600">Project Type</td><td>{{ learning_record.project_type | replace('_',' ') | title }}</td></tr>
+          <tr><td style="font-weight:600">Region</td><td>{{ learning_record.state or learning_record.region }}</td></tr>
+          <tr><td style="font-weight:600">Area</td><td>{{ "{:,.0f}".format(learning_record.total_sf) }} SF</td></tr>
+          <tr><td style="font-weight:600">Estimated Total</td><td style="font-weight:700;color:var(--green)">${{ "{:,.2f}".format(learning_record.estimated_total) }}</td></tr>
+          <tr><td style="font-weight:600">Cost / SF</td><td>${{ "{:,.2f}".format(learning_record.cost_per_sf) }}</td></tr>
+          <tr><td style="font-weight:600">Confidence</td><td>{{ "%.0f"|format(learning_record.confidence_score * 100) }}%</td></tr>
+          <tr><td style="font-weight:600">Data Source</td><td>{{ learning_record.data_source }}</td></tr>
+          <tr><td style="font-weight:600">Created</td><td>{{ learning_record.created_at[:19] if learning_record.created_at else '' }}</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- FEEDBACK FORM -->
+    <div class="card">
+      <div class="card-header">Record Feedback</div>
+      <div class="card-body">
+        <p style="font-size:0.85em;color:var(--text-2);margin-bottom:16px">
+          Record actual project costs, win/loss, or client rating to improve future estimates.
+        </p>
+        <form id="feedbackForm">
+          <input type="hidden" name="estimate_id" value="{{ estimate_id }}">
+          <div class="fg">
+            <label>Actual Project Cost</label>
+            <input class="fi" name="actual_cost" type="number" step="0.01" placeholder="e.g., 45000">
+          </div>
+          <div class="fg">
+            <label>Client Rating (1-5)</label>
+            <select class="fs" name="client_rating">
+              <option value="0">Not rated</option>
+              <option value="5">5 - Excellent</option>
+              <option value="4">4 - Good</option>
+              <option value="3">3 - Average</option>
+              <option value="2">2 - Below Average</option>
+              <option value="1">1 - Poor</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Bid Result</label>
+            <select class="fs" name="won_bid">
+              <option value="">Not applicable</option>
+              <option value="true">Won</option>
+              <option value="false">Lost</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Notes</label>
+            <textarea class="fi" name="notes" rows="3" placeholder="Any additional notes..."></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Submit Feedback</button>
+          <div id="feedbackResult" style="display:none;margin-top:12px;text-align:center;font-size:0.88em;color:var(--green);font-weight:600"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% if not report_html and not learning_record %}
+  <div class="empty">
+    <h3>Estimate not found</h3>
+    <p>No data found for estimate ID: {{ estimate_id }}</p>
+  </div>
+{% endif %}
+
+<script>
+function printReport() {
+  const frame = document.getElementById('reportFrame');
+  if (frame) frame.contentWindow.print();
+}
+
+const feedbackForm = document.getElementById('feedbackForm');
+if (feedbackForm) {
+  feedbackForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const form = new FormData(this);
+    try {
+      const resp = await fetch('/api/v1/feedback', { method:'POST', body:form });
+      const data = await resp.json();
+      const result = document.getElementById('feedbackResult');
+      if (data.success) {
+        result.style.display = 'block';
+        let msg = 'Feedback recorded!';
+        if (data.variance_percent) msg += ` Variance: ${data.variance_percent > 0 ? '+' : ''}${data.variance_percent}%`;
+        result.textContent = msg;
+      }
+    } catch (err) {
+      alert('Error submitting feedback: ' + err.message);
+    }
+  });
+}
+</script>
+{% endblock %}
