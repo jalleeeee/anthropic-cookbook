@@ -128,6 +128,12 @@ templates.env.filters["percent"] = format_percent
 # PAGE ROUTES — HTML pages served to browser
 # ---------------------------------------------------------------------------
 
+@app.get("/landing", response_class=HTMLResponse)
+async def landing_page(request: Request):
+    """Public-facing marketing landing page."""
+    return templates.TemplateResponse("landing.html", {"request": request})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Main dashboard — overview of all workflows, recent estimates, learning stats."""
