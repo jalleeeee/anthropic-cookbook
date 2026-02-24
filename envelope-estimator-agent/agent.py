@@ -1,20 +1,19 @@
 """
 Envelope Estimator Agent - Main Orchestrator
 
-Coordinates the full commercial estimating workflow:
-  ITB Intake → PDF Takeoff → Cost Estimation → Proposal Generation
+Three integrated workflows:
 
-Usage:
-  # Process a single set of plans
-  python agent.py --pdf plans.pdf
+  1. COMMERCIAL ESTIMATING (ITB → Takeoff → Estimate → Proposal)
+     python agent.py --pdf plans.pdf
 
-  # Process a folder of plans
-  python agent.py --folder /path/to/plans/
+  2. SATELLITE ROOF REPORT (Address → EagleView-style measurement report)
+     python agent.py --roof-report --address "123 Main St, Denver, CO 80202"
 
-  # Start in continuous monitoring mode (email + watched folder)
-  python agent.py --monitor
+  3. PROPERTY LOSS ESTIMATE (Photos → Xactimate-style insurance claim)
+     python agent.py --loss-report --address "123 Main St" --photos dmg1.jpg dmg2.jpg
 
-  # Process with specific trades only
+Additional modes:
+  python agent.py --monitor          # Continuous email/folder watch
   python agent.py --pdf plans.pdf --trades SID,ROF,GUT,WIN
 """
 
@@ -38,21 +37,30 @@ from modules.cost_engine import CostEngine, EstimateResult
 from modules.itb_intake import ITBIntake, ProjectInfo
 from modules.pdf_takeoff import PDFTakeoff, TakeoffResult
 from modules.proposal_gen import ProposalGenerator
+from modules.roof_report import RoofReportGenerator, RoofReport
+from modules.property_loss import PropertyLossEstimator, PropertyLossReport
 
 logger = logging.getLogger("envelope_estimator")
 
 
 class EnvelopeEstimatorAgent:
-    """Main orchestrator for the estimating pipeline."""
+    """Main orchestrator for all estimating pipelines."""
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self._setup_logging()
 
+        # Commercial estimating modules
         self.intake = ITBIntake(self.settings)
         self.takeoff = PDFTakeoff(self.settings)
         self.cost_engine = CostEngine(self.settings)
         self.proposal_gen = ProposalGenerator(self.settings)
+
+        # Satellite roof report module
+        self.roof_report_gen = RoofReportGenerator(self.settings)
+
+        # Property loss / insurance estimate module
+        self.loss_estimator = PropertyLossEstimator(self.settings)
 
         # Determine active trades based on enabled phases
         self.active_trades = []
@@ -74,9 +82,9 @@ class EnvelopeEstimatorAgent:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
-    # ------------------------------------------------------------------
-    # Single project processing
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # WORKFLOW 1: Commercial Estimating (ITB → Takeoff → Estimate → Proposal)
+    # ==================================================================
 
     def process_plans(
         self,
@@ -178,6 +186,113 @@ class EnvelopeEstimatorAgent:
             "proposal": proposal,
             "elapsed_seconds": elapsed,
         }
+
+    # ==================================================================
+    # WORKFLOW 2: Satellite Roof Report (address → EagleView-style report)
+    # ==================================================================
+
+    def generate_roof_report(
+        self,
+        address: str,
+        city: str = "",
+        state: str = "",
+        postal_code: str = "",
+        homeowner_name: str = "",
+    ) -> RoofReport:
+        """Generate a satellite-based roof measurement report from an address.
+
+        Uses Google Solar API + DataLayers GeoTIFF + Claude Vision to produce
+        a professional 3-page HTML report with area, pitch, edges, materials BOM.
+        """
+        print("=" * 60)
+        print("  SATELLITE ROOF MEASUREMENT REPORT")
+        print("=" * 60)
+        print(f"  Address: {address}")
+        if city:
+            print(f"  City:    {city}, {state} {postal_code}")
+        print()
+
+        report = self.roof_report_gen.generate(
+            address=address,
+            city=city,
+            state=state,
+            postal_code=postal_code,
+            homeowner_name=homeowner_name,
+        )
+
+        print(f"\n  Report: {report.report_number}")
+        print(f"  Area:   {report.total_true_area_sqft:,.0f} SF (3D)")
+        print(f"  Pitch:  {report.roof_pitch_ratio} ({report.roof_pitch_degrees:.1f} deg)")
+        print(f"  Facets: {len(report.segments)}")
+        print(f"  Materials: ${report.materials.total_cost:,.2f}")
+        print(f"  Provider: {report.quality.provider}")
+        print(f"  Confidence: {report.quality.confidence_score}%")
+
+        return report
+
+    # ==================================================================
+    # WORKFLOW 3: Property Loss Estimate (photos → Xactimate-style claim)
+    # ==================================================================
+
+    def generate_loss_report(
+        self,
+        address: str,
+        photo_paths: list[str],
+        cause_of_loss: str = "",
+        date_of_loss: str = "",
+        homeowner_name: str = "",
+        homeowner_phone: str = "",
+        policy_number: str = "",
+        insurance_company: str = "",
+        deductible: float = 1000.0,
+        city: str = "",
+        state: str = "",
+        postal_code: str = "",
+        include_roof_report: bool = False,
+    ) -> PropertyLossReport:
+        """Generate an Xactimate-style property loss / insurance estimate.
+
+        Analyzes damage photos with AI, generates line-item estimate with
+        labor/material breakdowns, depreciation, and ACV/RCV calculations.
+
+        If include_roof_report=True, also runs satellite roof measurement
+        to get accurate roof area/pitch for the damage estimate.
+        """
+        print("=" * 60)
+        print("  PROPERTY LOSS / INSURANCE ESTIMATE")
+        print("=" * 60)
+        print(f"  Address: {address}")
+        print(f"  Photos:  {len(photo_paths)}")
+        if cause_of_loss:
+            print(f"  Cause:   {cause_of_loss}")
+        print()
+
+        # Optionally run roof report first
+        roof_report = None
+        if include_roof_report and self.settings.google_api_key:
+            print("[Pre-step] Generating satellite roof measurements...")
+            roof_report = self.roof_report_gen.generate(
+                address=address, city=city, state=state, postal_code=postal_code,
+            )
+            print(f"  Roof: {roof_report.total_true_area_sqft:,.0f} SF @ {roof_report.roof_pitch_ratio}\n")
+
+        report = self.loss_estimator.generate(
+            address=address,
+            photo_paths=photo_paths,
+            cause_of_loss=cause_of_loss,
+            date_of_loss=date_of_loss,
+            homeowner_name=homeowner_name,
+            homeowner_phone=homeowner_phone,
+            policy_number=policy_number,
+            insurance_company=insurance_company,
+            deductible=deductible,
+            city=city,
+            state=state,
+            postal_code=postal_code,
+            roof_report=roof_report,
+        )
+
+        return report
 
     # ------------------------------------------------------------------
     # Continuous monitoring mode
@@ -303,39 +418,58 @@ class EnvelopeEstimatorAgent:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Envelope Estimator Agent - AI Commercial Estimating"
+        description="Envelope Estimator Agent - AI Construction Estimating Platform"
     )
+
+    # Workflow 1: Commercial plans
     parser.add_argument(
         "--pdf", nargs="+",
-        help="PDF plan file(s) to process",
+        help="PDF plan file(s) to process (commercial estimating)",
     )
-    parser.add_argument(
-        "--folder",
-        help="Folder containing PDF plans",
-    )
+    parser.add_argument("--folder", help="Folder containing PDF plans")
     parser.add_argument(
         "--monitor", action="store_true",
-        help="Run in continuous monitoring mode (email + folder watch)",
+        help="Continuous monitoring mode (email + folder watch)",
+    )
+    parser.add_argument("--trades", help="Trade codes (e.g., SID,ROF,GUT,WIN)")
+    parser.add_argument("--name", help="Project name")
+    parser.add_argument("--phases", help="Phase numbers (e.g., 1,2)")
+
+    # Workflow 2: Satellite roof report
+    parser.add_argument(
+        "--roof-report", action="store_true",
+        help="Generate satellite roof measurement report",
+    )
+
+    # Workflow 3: Property loss / insurance estimate
+    parser.add_argument(
+        "--loss-report", action="store_true",
+        help="Generate property loss / insurance estimate",
+    )
+    parser.add_argument("--photos", nargs="+", help="Damage photo file(s)")
+
+    # Shared arguments
+    parser.add_argument("--address", help="Property address")
+    parser.add_argument("--city", help="City", default="")
+    parser.add_argument("--state", help="State", default="")
+    parser.add_argument("--zip", help="Postal/ZIP code", default="")
+    parser.add_argument("--homeowner", help="Homeowner name", default="")
+    parser.add_argument("--cause", help="Cause of loss (hail/wind/water/fire)")
+    parser.add_argument("--date-of-loss", help="Date of loss (YYYY-MM-DD)")
+    parser.add_argument("--policy", help="Insurance policy number")
+    parser.add_argument("--insurance", help="Insurance company name")
+    parser.add_argument(
+        "--deductible", type=float, default=1000.0,
+        help="Insurance deductible amount (default: $1000)",
     )
     parser.add_argument(
-        "--trades",
-        help="Comma-separated trade codes (e.g., SID,ROF,GUT,WIN)",
-    )
-    parser.add_argument(
-        "--name",
-        help="Project name (default: derived from filename)",
-    )
-    parser.add_argument(
-        "--phases",
-        help="Comma-separated phase numbers to enable (e.g., 1,2)",
+        "--with-roof", action="store_true",
+        help="Include satellite roof measurement with loss report",
     )
 
     args = parser.parse_args()
-
-    # Load settings
     settings = load_settings()
 
-    # Override phases if specified
     if args.phases:
         settings.enabled_phases = [
             int(p.strip()) for p in args.phases.split(",")
@@ -343,19 +477,55 @@ def main():
 
     agent = EnvelopeEstimatorAgent(settings)
 
-    # Parse trade codes
-    trade_codes = None
-    if args.trades:
-        trade_codes = [c.strip().upper() for c in args.trades.split(",")]
+    # ---- Workflow routing ----
 
-    if args.monitor:
+    if args.roof_report:
+        if not args.address:
+            print("Error: --address is required for --roof-report")
+            sys.exit(1)
+        agent.generate_roof_report(
+            address=args.address,
+            city=args.city,
+            state=args.state,
+            postal_code=args.zip,
+            homeowner_name=args.homeowner,
+        )
+
+    elif args.loss_report:
+        if not args.address:
+            print("Error: --address is required for --loss-report")
+            sys.exit(1)
+        if not args.photos:
+            print("Error: --photos is required for --loss-report")
+            sys.exit(1)
+        agent.generate_loss_report(
+            address=args.address,
+            photo_paths=args.photos,
+            cause_of_loss=args.cause or "",
+            date_of_loss=args.date_of_loss or "",
+            homeowner_name=args.homeowner,
+            policy_number=args.policy or "",
+            insurance_company=args.insurance or "",
+            deductible=args.deductible,
+            city=args.city,
+            state=args.state,
+            postal_code=args.zip,
+            include_roof_report=args.with_roof,
+        )
+
+    elif args.monitor:
         agent.monitor()
+
     elif args.pdf:
+        trade_codes = None
+        if args.trades:
+            trade_codes = [c.strip().upper() for c in args.trades.split(",")]
         agent.process_plans(
             pdf_paths=args.pdf,
             project_name=args.name or "",
             trade_codes=trade_codes,
         )
+
     elif args.folder:
         folder = Path(args.folder)
         pdfs = sorted(
@@ -364,19 +534,33 @@ def main():
         if not pdfs:
             print(f"No PDF files found in {args.folder}")
             sys.exit(1)
+        trade_codes = None
+        if args.trades:
+            trade_codes = [c.strip().upper() for c in args.trades.split(",")]
         agent.process_plans(
             pdf_paths=[str(p) for p in pdfs],
             project_name=args.name or folder.name,
             trade_codes=trade_codes,
         )
+
     else:
         parser.print_help()
-        print("\nExamples:")
-        print("  python agent.py --pdf plans.pdf")
-        print("  python agent.py --pdf sheet1.pdf sheet2.pdf --trades SID,ROF")
-        print("  python agent.py --folder ./my_project_plans/")
-        print("  python agent.py --monitor")
-        print("  python agent.py --pdf plans.pdf --phases 1,2")
+        print("\n" + "=" * 60)
+        print("  THREE WORKFLOWS:")
+        print("=" * 60)
+        print("\n  1. COMMERCIAL ESTIMATING (plans → proposal):")
+        print("     python agent.py --pdf plans.pdf")
+        print("     python agent.py --pdf sheet1.pdf sheet2.pdf --trades SID,ROF")
+        print("     python agent.py --folder ./project_plans/")
+        print("     python agent.py --monitor")
+        print("\n  2. SATELLITE ROOF REPORT (address → measurement report):")
+        print('     python agent.py --roof-report --address "123 Main St, Denver, CO"')
+        print('     python agent.py --roof-report --address "456 Oak Ave" --city "Austin" --state TX')
+        print("\n  3. PROPERTY LOSS ESTIMATE (photos → insurance claim):")
+        print('     python agent.py --loss-report --address "789 Elm St" --photos dmg1.jpg dmg2.jpg')
+        print('     python agent.py --loss-report --address "789 Elm St" --photos *.jpg --cause hail --with-roof')
+        print('     python agent.py --loss-report --address "789 Elm St" --photos *.jpg \\')
+        print('       --cause wind --homeowner "John Doe" --insurance "State Farm" --deductible 2500')
 
 
 if __name__ == "__main__":

@@ -15,5 +15,12 @@ Pillow>=10.0               # Image processing
 pandas>=2.0                # For DDC-CWICR data analysis
 pyarrow>=15.0              # Parquet file support
 
+# HTTP / APIs
+requests>=2.31.0           # Google APIs (Solar, Maps, Geocoding)
+
+# GeoTIFF processing (for satellite roof reports)
+tifffile>=2024.1.0         # GeoTIFF parsing
+numpy>=1.26.0              # Array processing for DSM analysis
+
 # Utilities
 python-dotenv>=1.0.0       # .env file loading

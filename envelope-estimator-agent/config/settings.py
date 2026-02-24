@@ -94,6 +94,9 @@ class Settings:
     region: str = "en"  # DDC-CWICR region code
     currency: str = "USD"
 
+    # Google APIs (for roof reports / satellite imagery)
+    google_api_key: str = ""       # Google Maps + Solar API key
+
     # Validation thresholds
     max_variance_percent: float = 2.0    # 4-way validation tolerance
     confidence_threshold: float = 0.85   # minimum confidence for auto-accept
@@ -145,6 +148,9 @@ def load_settings() -> Settings:
     settings.log_level = os.getenv("LOG_LEVEL", "INFO")
     settings.region = os.getenv("DDC_REGION", "en")
     settings.currency = os.getenv("CURRENCY", "USD")
+
+    # Google APIs
+    settings.google_api_key = os.getenv("GOOGLE_API_KEY", "")
 
     # Phases
     phases = os.getenv("ENABLED_PHASES", "1")
