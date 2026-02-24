@@ -57,14 +57,25 @@ SHAPE_FACTORS = {
 }
 
 # Window-to-Wall Ratio (WWR) by building type
-# This is the % of gross wall area that is windows/doors
+# Validated against DOE Commercial Prototype Building Models & CBECS data
+# ASHRAE 90.1 baseline cap: 40% of gross above-grade wall area
+# California Title 24 max: 40% WWR
 WINDOW_WALL_RATIOS = {
-    "multifamily_standard": 0.22,    # 22% — typical garden-style apartments
-    "multifamily_upscale": 0.28,     # 28% — more glass, larger units
-    "multifamily_affordable": 0.18,  # 18% — code minimum, smaller windows
+    # Multifamily — DOE prototype: 20% mid-rise, 30-35% high-rise
+    "multifamily_standard": 0.20,    # 20% — DOE mid-rise prototype (3-5 story garden)
+    "multifamily_upscale": 0.28,     # 28% — upscale mid-rise, more glass
+    "multifamily_highrise": 0.33,    # 33% — DOE high-rise prototype (8+ stories)
+    "multifamily_affordable": 0.15,  # 15% — code minimum, smaller windows
+    # Commercial — DOE prototypes
+    "office_small": 0.20,            # 20% — DOE small office (1-story)
+    "office_medium": 0.33,           # 33% — DOE medium office (2-4 story)
+    "office_large": 0.40,            # 40% — DOE large office (>4 story), ASHRAE cap
+    "retail_box": 0.18,              # 18% — DOE retail prototype
+    "retail_ground_floor": 0.70,     # 70% — DOE storefront glazing
+    "hospital": 0.27,                # 27% — DOE hospital prototype
+    "school_k12": 0.33,              # 33% — DOE K-12 school prototype
+    # Residential
     "single_family": 0.15,           # 15% — residential
-    "commercial_office": 0.40,       # 40% — lots of glass
-    "retail_ground_floor": 0.60,     # 60% — storefront glazing
 }
 
 # Windows per residential unit (by unit type)
@@ -93,11 +104,19 @@ FLOOR_HEIGHTS = {
     "parking_garage": 10.5,
 }
 
-# Gutter and downspout ratios
+# Gutter and downspout ratios — validated industry standards
+# Research: 1 DS per 30-35 LF most common; 1 per 600-800 SF roof (5" gutter, 2×3 DS)
+# Residential rule of thumb: building SF / 10 ≈ gutter LF
 GUTTER_RATIOS = {
-    "downspout_spacing_lf": 40,     # 1 downspout per 40 LF of gutter
+    "downspout_spacing_lf": 35,     # 1 downspout per 35 LF of gutter (industry standard)
+    "downspout_by_roof_sf": 700,    # 1 downspout per 700 SF of roof area (5" K-style)
+    "downspout_by_roof_sf_6in": 1100,  # 1 per 1100 SF (6" gutter, 3×4 DS)
     "downspout_height_adder_ft": 4, # Add 4 ft for elbows at top and bottom
     "elbow_count_per_downspout": 3, # Typical: top offset + bottom offset
+    "cross_section_rule": 100,      # 1 sq in of DS cross-section per 100 SF roof
+    # Gutter length by roof type
+    "gable_eave_ratio": 0.50,       # Gable: gutters on eaves = ~50% of perimeter
+    "hip_eave_ratio": 1.00,         # Hip: gutters on all sides = full perimeter at eave
 }
 
 # Trim and accessory ratios (LF per SF of cladding)
@@ -125,6 +144,56 @@ BALCONY_RATIOS = {
 # Waterproofing ratios
 WATERPROOFING_RATIOS = {
     "foundation_depth_ft": 4.0,   # Typical below-grade depth
+}
+
+# Validated standard deduction sizes (Dagostino/Peterson textbook)
+OPENING_DEDUCTION_SF = {
+    "window_avg_sf": 15.0,        # ~3' × 5' standard window
+    "door_avg_sf": 20.0,          # ~3' × 6'-8" standard exterior door
+    "sgd_avg_sf": 40.0,           # ~6' × 6'-8" sliding glass door
+}
+
+# Roofing waste factors by complexity tier — validated from research
+# Source: Deductive takeoff methods research, industry data
+ROOF_WASTE_FACTORS = {
+    "simple_gable": 0.08,         # 5-10% — simple gable, no valleys
+    "standard_gable": 0.10,       # 7-10% — standard residential gable
+    "standard_hip": 0.13,         # 12-15% — standard hip roof
+    "complex_hip": 0.18,          # 15-22% — complex hip with valleys/dormers
+    "extreme": 0.22,              # 25%+ — extreme complexity, many intersections
+    "flat_membrane": 0.05,        # 5% — flat/low-slope membrane (laps only)
+    # Add-ons (cumulative)
+    "addon_skylights": 0.01,      # +1% for skylights
+    "addon_dormers": 0.015,       # +1.5% per dormer zone
+    "addon_multiple_valleys": 0.02,  # +2% for multiple valleys
+    "addon_steep_pitch": 0.025,   # +2.5% for pitch ≥ 8:12 (handling difficulty)
+}
+
+# Wall-to-Floor Area Ratio (WFR) — validated from research
+# WFR = External Wall Area / Gross Floor Area
+# A 0.1 change in WFR impacts construction costs by 4-5%
+WALL_FLOOR_RATIOS = {
+    "office_large_deep_plate": 0.40,   # Large office, deep floor plates
+    "office_midrise_benchmark": 0.46,  # Mid-rise office benchmark
+    "office_high_range": 0.50,         # High-end office
+    "multifamily_efficient": 0.50,     # Efficient square multifamily
+    "multifamily_typical": 0.60,       # Typical apartment building
+    "multifamily_tower": 0.70,         # Narrow tower, high WFR
+    "residential_narrow": 0.80,        # Long/narrow residential (worst case)
+}
+
+# Parametric cost impact constants — RSMeans method
+PARAMETRIC_COST_IMPACTS = {
+    "perimeter_cost_per_100lf_per_sf": 1.60,  # Each +100 LF perimeter adds $1.60/SF
+    "scaling_exponent": 0.6,                   # Six-Tenths Rule for economy of scale
+}
+
+# Soffit depth constants
+SOFFIT_DEPTHS = {
+    "typical_residential": 1.5,   # 1.5 ft soffit depth — standard
+    "wide_overhang": 2.0,         # 2 ft overhang — craftsman/ranch style
+    "minimal": 1.0,               # 1 ft — tight urban, code minimum
+    "commercial_flat": 0.0,       # No soffit on flat commercial roofs
 }
 
 
@@ -227,7 +296,9 @@ class DerivedQuantities:
     # Roofing
     roof_area_plan_sf: float = 0.0
     roof_area_actual_sf: float = 0.0
+    roof_area_with_waste_sf: float = 0.0
     roof_pitch_multiplier: float = 1.0
+    roof_waste_factor: float = 0.0
 
     # Sheet metal / trim
     soffit_sf: float = 0.0
@@ -428,11 +499,21 @@ class DeductiveEngine:
         # ------------------------------------------------------------------
         wwr = wwr_override
         if wwr is None:
-            wwr = WINDOW_WALL_RATIOS.get(
-                "multifamily_standard", 0.22
-            )
+            # Select WWR based on building type — DOE/CBECS validated
+            if seeds.stories_above_grade >= 8:
+                wwr = WINDOW_WALL_RATIOS["multifamily_highrise"]
+            elif seeds.construction_type in ("V-A", "V-B", "III-A"):
+                wwr = WINDOW_WALL_RATIOS["multifamily_standard"]
+            else:
+                wwr = WINDOW_WALL_RATIOS.get(
+                    "multifamily_standard", 0.20
+                )
 
         d.window_wall_ratio = wwr
+
+        # Use validated deduction sizes to compute opening areas
+        avg_win_sf = OPENING_DEDUCTION_SF["window_avg_sf"]  # 15 SF
+        avg_door_sf = OPENING_DEDUCTION_SF["door_avg_sf"]   # 20 SF
         d.total_window_area_sf = d.gross_wall_area_sf * wwr * 0.75
         # Windows are ~75% of total openings; doors are ~25%
         d.total_door_area_sf = d.gross_wall_area_sf * wwr * 0.25
@@ -487,12 +568,11 @@ class DeductiveEngine:
                     f"{wpmu} windows/unit = {d.window_count} EA"
                 )
         else:
-            # Estimate from window area / typical window size
-            avg_window_sf = 15.0  # ~3' × 5'
-            d.window_count = round(d.total_window_area_sf / avg_window_sf)
+            # Estimate from window area / validated deduction size
+            d.window_count = round(d.total_window_area_sf / avg_win_sf)
             log.append(
                 f"Windows: {d.total_window_area_sf:.0f} SF / "
-                f"{avg_window_sf} SF/window = {d.window_count} EA (estimated)"
+                f"{avg_win_sf} SF/window = {d.window_count} EA (estimated)"
             )
 
         # Exterior doors
@@ -570,14 +650,33 @@ class DeductiveEngine:
         d.roof_area_plan_sf = seeds.footprint_sf  # Plan view = footprint
         d.roof_pitch_multiplier = gpm(seeds.roof_pitch)
         d.roof_area_actual_sf = d.roof_area_plan_sf * d.roof_pitch_multiplier
+
+        # Determine waste factor by roof complexity — validated tiers
+        if is_flat:
+            d.roof_waste_factor = ROOF_WASTE_FACTORS["flat_membrane"]
+        elif seeds.roof_type.lower() in ("hip", "hip shingle"):
+            d.roof_waste_factor = ROOF_WASTE_FACTORS["standard_hip"]
+        else:
+            d.roof_waste_factor = ROOF_WASTE_FACTORS["standard_gable"]
+        # Add steep pitch penalty
+        if d.roof_pitch_multiplier >= 1.202:  # 8:12 or steeper
+            d.roof_waste_factor += ROOF_WASTE_FACTORS["addon_steep_pitch"]
+
+        d.roof_area_with_waste_sf = round(
+            d.roof_area_actual_sf * (1 + d.roof_waste_factor)
+        )
         log.append(
             f"Roof: {d.roof_area_plan_sf:.0f} SF plan × "
             f"{d.roof_pitch_multiplier:.3f} pitch = "
             f"{d.roof_area_actual_sf:.0f} SF actual"
         )
+        log.append(
+            f"Roof waste: {d.roof_waste_factor:.0%} → "
+            f"{d.roof_area_with_waste_sf:.0f} SF with waste"
+        )
 
         # ------------------------------------------------------------------
-        # Step 8: GUTTERS / DRAINAGE
+        # Step 8: GUTTERS / DRAINAGE — validated spacing rules
         # ------------------------------------------------------------------
         is_flat = seeds.roof_pitch.lower() in ("flat", "0:12", "1/4:12", "")
         if is_flat:
@@ -595,11 +694,23 @@ class DeductiveEngine:
             )
         else:
             # Pitched roof: gutters along eave edges
-            d.gutter_lf = d.perimeter_lf * 0.5  # Eave ≈ 50% of perimeter
-            d.downspout_count = max(
-                2,
-                round(d.gutter_lf / GUTTER_RATIOS["downspout_spacing_lf"]),
+            # Gable roofs: eaves on 2 sides (~50%), Hip roofs: all 4 sides (~100%)
+            is_hip = seeds.roof_type.lower() in (
+                "hip", "hip shingle", "hip metal",
             )
+            eave_ratio = (
+                GUTTER_RATIOS["hip_eave_ratio"] if is_hip
+                else GUTTER_RATIOS["gable_eave_ratio"]
+            )
+            d.gutter_lf = d.perimeter_lf * eave_ratio
+            # Use validated 35 LF spacing, cross-check with roof area method
+            ds_by_spacing = round(
+                d.gutter_lf / GUTTER_RATIOS["downspout_spacing_lf"]
+            )
+            ds_by_area = round(
+                d.roof_area_actual_sf / GUTTER_RATIOS["downspout_by_roof_sf"]
+            )
+            d.downspout_count = max(2, max(ds_by_spacing, ds_by_area))
             d.downspout_lf = d.downspout_count * (
                 d.total_building_height_ft
                 + GUTTER_RATIOS["downspout_height_adder_ft"]
@@ -608,11 +719,15 @@ class DeductiveEngine:
                 d.downspout_count
                 * GUTTER_RATIOS["elbow_count_per_downspout"]
             )
+            roof_type_label = "hip (all sides)" if is_hip else "gable (eaves)"
             log.append(
-                f"Gutters: {d.gutter_lf:.0f} LF (eave edges ≈ 50% of perimeter)"
+                f"Gutters: {d.gutter_lf:.0f} LF "
+                f"({roof_type_label}, {eave_ratio:.0%} of perimeter)"
             )
             log.append(
-                f"Downspouts: {d.downspout_count} EA × "
+                f"Downspouts: {d.downspout_count} EA "
+                f"(max of {ds_by_spacing} by 35 LF spacing, "
+                f"{ds_by_area} by roof area) × "
                 f"({d.total_building_height_ft:.0f} + 4) ft = "
                 f"{d.downspout_lf:.0f} LF total"
             )
@@ -620,7 +735,10 @@ class DeductiveEngine:
         # ------------------------------------------------------------------
         # Step 9: TRIM & ACCESSORIES
         # ------------------------------------------------------------------
-        d.soffit_sf = d.perimeter_lf * 1.5  # ~1.5 ft deep soffit
+        soffit_depth = SOFFIT_DEPTHS.get("typical_residential", 1.5)
+        if is_flat:
+            soffit_depth = SOFFIT_DEPTHS["commercial_flat"]
+        d.soffit_sf = d.perimeter_lf * soffit_depth
         d.fascia_lf = d.perimeter_lf
         d.j_channel_lf = d.net_wall_area_sf * TRIM_RATIOS["j_channel_per_sf"]
         d.corner_trim_lf = (
