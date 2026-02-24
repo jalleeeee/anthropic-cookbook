@@ -1,0 +1,19 @@
+# Envelope Estimator Agent - Dependencies
+
+# Core AI
+anthropic>=0.40.0          # Claude API - vision + reasoning
+openai>=1.50.0             # OpenAI embeddings for DDC-CWICR search
+
+# Vector database
+qdrant-client>=1.12.0      # Qdrant vector search
+
+# PDF processing
+pdf2image>=1.17.0          # PDF to images (requires poppler-utils system package)
+Pillow>=10.0               # Image processing
+
+# Data
+pandas>=2.0                # For DDC-CWICR data analysis
+pyarrow>=15.0              # Parquet file support
+
+# Utilities
+python-dotenv>=1.0.0       # .env file loading
