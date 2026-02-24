@@ -41,6 +41,8 @@ from modules.pdf_takeoff import PDFTakeoff, TakeoffResult
 from modules.cost_engine import CostEngine, EstimateResult
 from modules.proposal_gen import ProposalGenerator
 from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantities
+from modules.live_catalog import LiveCatalog
+from modules.rom_estimator import ROMEstimator
 from modules.self_service_scan import (
     CustomerIntakeForm,
     FiveDEstimate,
@@ -86,6 +88,8 @@ cost_engine = CostEngine(settings)
 proposal_gen = ProposalGenerator(settings)
 itb_intake = ITBIntake(settings)
 deductive = DeductiveEngine()
+live_catalog = LiveCatalog(settings)
+rom_estimator = ROMEstimator(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +585,25 @@ async def api_takeoff_upload(
             "cost_per_sf": estimate_result.cost_per_sf,
         },
         "proposal": proposal,
+        # Include deductive engine ROM if Step 0 produced seeds
+        "deductive_rom": {
+            "available": len(takeoff_result.deductive_sov) > 0,
+            "buildings": [
+                {
+                    "building_id": sov.get("building_id", ""),
+                    "rom_total": sov.get("total_value", 0),
+                    "line_items": len(sov.get("items", [])),
+                }
+                for sov in takeoff_result.deductive_sov
+            ],
+            "rom_total": sum(
+                s.get("total_value", 0) for s in takeoff_result.deductive_sov
+            ),
+            "note": (
+                "ROM from deductive engine (seed values → math → DDC pricing). "
+                "Compare against AI vision takeoff above for validation."
+            ),
+        } if takeoff_result.deductive_sov else None,
     })
 
 
@@ -684,6 +707,195 @@ async def api_deductive_derive(request: Request):
         "building_count": len(results),
         "buildings": results,
         "project_total": sum(r["schedule_of_values"]["total_value"] for r in results),
+    })
+
+
+@app.post("/api/v1/rom/estimate")
+async def api_rom_estimate(request: Request):
+    """ROM (Rough Order of Magnitude) preliminary estimate.
+
+    Generates a quick envelope estimate from minimal inputs using the
+    Deductive Ratio Engine + Live DDC-CWICR Cost Catalog.
+
+    No PDF upload required — just provide building SF, stories, and unit count.
+    Accuracy: +/- 25% (AACE Class 5).
+
+    Request body:
+    {
+        "project_name": "Parkview Apartments",
+        "buildings": [
+            {
+                "building_id": "Bldg A",
+                "footprint_sf": 12000,
+                "stories_above_grade": 4,
+                "unit_count": 48,
+                "primary_cladding": "fiber_cement_lap",
+                "roof_pitch": "flat"
+            }
+        ]
+    }
+    """
+    body = await request.json()
+    project_name = body.get("project_name", "ROM Estimate")
+    buildings_input = body.get("buildings", [body])
+
+    rom = rom_estimator.estimate(
+        project_name=project_name,
+        buildings=buildings_input,
+        overhead_pct=body.get("overhead_pct"),
+        profit_pct=body.get("profit_pct"),
+    )
+
+    return JSONResponse(rom_estimator.estimate_to_dict(rom))
+
+
+@app.get("/api/v1/catalog/search")
+async def api_catalog_search(
+    q: str = "",
+    limit: int = 10,
+    csi: str = "",
+    catalog_type: str = "all",
+):
+    """Search the live cost catalog (labor + material).
+
+    Connected to DDC-CWICR database via Qdrant vector search when available,
+    falls back to built-in US national average catalog.
+
+    Query params:
+        q: Search query (e.g., "fiber cement siding", "TPO roofing")
+        limit: Max results (default 10)
+        csi: CSI division filter (e.g., "07 46" for siding)
+        catalog_type: "labor", "material", or "all"
+    """
+    if not q:
+        return JSONResponse({"error": "Query parameter 'q' is required"}, status_code=400)
+
+    result = live_catalog.search(
+        query=q,
+        limit=limit,
+        csi_filter=csi,
+        catalog_type=catalog_type,
+    )
+
+    return JSONResponse({
+        "query": result.query,
+        "total_found": result.total_found,
+        "search_type": result.search_type,
+        "entries": [
+            {
+                "rate_code": e.rate_code,
+                "description": e.description,
+                "csi_division": e.csi_division,
+                "unit": e.unit,
+                "total_unit_price": e.total_unit_price,
+                "material_unit_price": e.material_unit_price,
+                "labor_unit_price": e.labor_unit_price,
+                "equipment_unit_price": e.equipment_unit_price,
+                "source": e.source,
+                "match_score": e.match_score,
+                "labor": {
+                    "crew_size": e.labor.crew_size,
+                    "labor_hours_per_unit": e.labor.labor_hours_per_unit,
+                    "labor_cost_per_unit": e.labor.labor_cost_per_unit,
+                } if e.labor else None,
+                "materials": [
+                    {
+                        "resource_code": m.resource_code,
+                        "resource_name": m.resource_name,
+                        "unit": m.unit,
+                        "unit_price": m.unit_price,
+                    }
+                    for m in e.materials
+                ] if e.materials else [],
+            }
+            for e in result.entries
+        ],
+    })
+
+
+@app.get("/api/v1/catalog/division/{csi_code}")
+async def api_catalog_division(csi_code: str):
+    """Browse all catalog entries for a CSI MasterFormat division.
+
+    Examples:
+        /api/v1/catalog/division/07 46  → Siding
+        /api/v1/catalog/division/07 54  → TPO Roofing
+        /api/v1/catalog/division/08 51  → Windows
+    """
+    entries = live_catalog.browse_division(csi_code)
+    return JSONResponse({
+        "csi_division": csi_code,
+        "total_entries": len(entries),
+        "entries": [
+            {
+                "description": e.description,
+                "unit": e.unit,
+                "total_unit_price": e.total_unit_price,
+                "material_unit_price": e.material_unit_price,
+                "labor_unit_price": e.labor_unit_price,
+                "equipment_unit_price": e.equipment_unit_price,
+                "source": e.source,
+            }
+            for e in entries
+        ],
+    })
+
+
+@app.get("/api/v1/catalog/labor")
+async def api_catalog_labor(q: str = ""):
+    """Search the labor rate catalog.
+
+    Returns crew compositions, labor hours, and wage rates from DDC-CWICR.
+    """
+    if not q:
+        return JSONResponse({"error": "Query parameter 'q' is required"}, status_code=400)
+
+    rates = live_catalog.get_labor_rates(q)
+    return JSONResponse({
+        "query": q,
+        "total_found": len(rates),
+        "labor_rates": [
+            {
+                "rate_code": r.rate_code,
+                "description": r.description,
+                "unit": r.unit,
+                "crew_size": r.crew_size,
+                "workers": r.workers_count,
+                "engineers": r.engineers_count,
+                "machinists": r.machinists_count,
+                "labor_hours_per_unit": r.labor_hours_per_unit,
+                "labor_cost_per_unit": r.labor_cost_per_unit,
+                "source": r.source,
+            }
+            for r in rates
+        ],
+    })
+
+
+@app.get("/api/v1/catalog/materials")
+async def api_catalog_materials(q: str = ""):
+    """Search the material pricing catalog.
+
+    Returns material unit costs from DDC-CWICR database.
+    """
+    if not q:
+        return JSONResponse({"error": "Query parameter 'q' is required"}, status_code=400)
+
+    prices = live_catalog.get_material_prices(q)
+    return JSONResponse({
+        "query": q,
+        "total_found": len(prices),
+        "materials": [
+            {
+                "resource_code": m.resource_code,
+                "resource_name": m.resource_name,
+                "unit": m.unit,
+                "unit_price": m.unit_price,
+                "category": m.category,
+                "source": m.source,
+            }
+            for m in prices
+        ],
     })
 
 

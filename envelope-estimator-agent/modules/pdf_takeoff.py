@@ -53,6 +53,7 @@ from config.multifamily_template import (
     MULTIFAMILY_VALIDATION_PROMPT,
     get_default_multifamily_template,
 )
+from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantities
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,10 @@ class TakeoffResult:
     total_units: int = 0
     buildings_data: list[dict] = field(default_factory=list)
     ratio_checks: dict = field(default_factory=dict)
+    # Deductive engine results (math-derived quantities from seed values)
+    deductive_results: list[DerivedQuantities] = field(default_factory=list)
+    seed_values: list[SeedValues] = field(default_factory=list)
+    deductive_sov: list[dict] = field(default_factory=list)
 
 
 class PDFTakeoff:
@@ -201,6 +206,44 @@ class PDFTakeoff:
                 f"stories={seeds.get('stories_above_grade', 0)}, "
                 f"units={seeds.get('unit_count', 0)}"
             )
+
+        # Step 0b: Run Deductive Engine on seed values
+        # This gives us a MATH-DERIVED baseline of all quantities before
+        # the AI does any vision-based measurement. We compare at the end.
+        if doc_review:
+            deductive_seeds = self._seeds_from_doc_review(doc_review, is_multifamily)
+            if deductive_seeds:
+                engine = DeductiveEngine()
+                for seed in deductive_seeds:
+                    derived = engine.derive(seed)
+                    sov = engine.generate_schedule_of_values(seed, derived)
+                    result.seed_values.append(seed)
+                    result.deductive_results.append(derived)
+                    result.deductive_sov.append({
+                        "building_id": sov.building_id,
+                        "total_value": sov.total_value,
+                        "items": [
+                            {
+                                "item": i.item_number,
+                                "description": i.description,
+                                "csi": i.csi_division,
+                                "qty": i.quantity,
+                                "unit": i.unit,
+                                "unit_price": i.unit_price,
+                                "value": i.scheduled_value,
+                            }
+                            for i in sov.items
+                        ],
+                    })
+                logger.info(
+                    f"Deductive engine: {len(deductive_seeds)} buildings derived, "
+                    f"ROM total: ${sum(s['total_value'] for s in result.deductive_sov):,.0f}"
+                )
+                result.raw_ai_responses.append({
+                    "step": "deductive_engine",
+                    "building_count": len(deductive_seeds),
+                    "rom_total": sum(s["total_value"] for s in result.deductive_sov),
+                })
 
         # Step 2: Identify relevant sheets
         result.sheets_identified = self._identify_sheets(
@@ -381,6 +424,117 @@ class PDFTakeoff:
             logger.error(f"Document review failed: {e}")
 
         return {}
+
+    # ------------------------------------------------------------------
+    # Convert document review output → SeedValues for deductive engine
+    # ------------------------------------------------------------------
+
+    def _seeds_from_doc_review(
+        self, doc_review: dict, is_multifamily: bool
+    ) -> list[SeedValues]:
+        """Convert document review JSON into SeedValues for the deductive engine.
+
+        The document review (Step 0) extracts labeled dimensions from plans.
+        This bridges those raw values into the typed SeedValues dataclass that
+        the DeductiveEngine expects.
+        """
+        seeds_data = doc_review.get("seed_values_extracted", {})
+        review = doc_review.get("document_review", {})
+        scope = doc_review.get("scope_checklist", {})
+
+        # Need at minimum footprint and stories to run the engine
+        footprint = float(seeds_data.get("footprint_sf", 0) or 0)
+        stories = int(seeds_data.get("stories_above_grade", 0) or 0)
+        if footprint <= 0 or stories <= 0:
+            return []
+
+        # Determine if multiple buildings
+        building_count = int(review.get("building_count", 1) or 1)
+        building_ids = review.get("building_ids", [])
+
+        # Map checklist to cladding/roof types
+        walls = scope.get("exterior_walls", [])
+        primary_cladding = seeds_data.get("primary_cladding", "")
+        if not primary_cladding and walls:
+            cladding_map = {
+                "Siding": "fiber_cement_lap",
+                "Brick": "brick_veneer",
+                "Stone": "stone_veneer",
+                "Stucco": "stucco_eifs",
+                "Metal Panel": "metal_panel",
+                "EIFS": "stucco_eifs",
+                "Block": "cmu",
+            }
+            for w in walls:
+                if w in cladding_map:
+                    primary_cladding = cladding_map[w]
+                    break
+
+        roof_finish = scope.get("roof_finish", "")
+        roof_pitch = seeds_data.get("roof_pitch", "")
+        if not roof_pitch:
+            if roof_finish in ("Single ply", "Built up"):
+                roof_pitch = "flat"
+            elif roof_finish == "Shingle":
+                roof_pitch = "6:12"
+            elif roof_finish in ("Metal", "Standing seam"):
+                roof_pitch = "4:12"
+
+        has_balcony = "Balcony" in scope.get("building_projections", [])
+        has_parapet = "Parapet" in scope.get("building_projections", [])
+
+        # If multiple identical buildings, divide footprint per building
+        # If different buildings and we only have one footprint, still divide
+        per_bldg_footprint = (
+            footprint / building_count if building_count > 1 else footprint
+        )
+        per_bldg_units = 0
+        unit_count = int(seeds_data.get("unit_count", 0) or 0)
+        if unit_count and building_count > 1:
+            per_bldg_units = unit_count // building_count
+        elif unit_count:
+            per_bldg_units = unit_count
+
+        results = []
+        for i in range(max(1, building_count)):
+            bid = (
+                building_ids[i]
+                if i < len(building_ids)
+                else f"Building {chr(65 + i)}"
+            )
+            seed = SeedValues(
+                building_id=bid,
+                footprint_sf=per_bldg_footprint,
+                stories_above_grade=stories,
+                perimeter_lf=float(seeds_data.get("perimeter_lf", 0) or 0),
+                floor_to_floor_ft=float(
+                    seeds_data.get("floor_to_floor_ft", 0) or 0
+                ),
+                total_building_height_ft=float(
+                    seeds_data.get("total_building_height_ft", 0) or 0
+                ),
+                parapet_height_ft=float(
+                    seeds_data.get("parapet_height_ft", 0) or 0
+                ) if has_parapet else 0.0,
+                unit_count=per_bldg_units,
+                roof_pitch=roof_pitch or "flat",
+                building_shape="typical_multifamily" if is_multifamily else "rectangle_2:1",
+                primary_cladding=primary_cladding or "fiber_cement_lap",
+                secondary_cladding=seeds_data.get("secondary_cladding", ""),
+                secondary_cladding_floors=seeds_data.get(
+                    "secondary_cladding_floors", ""
+                ),
+                corridor_type="interior",
+                balcony_count=int(
+                    seeds_data.get("balcony_count", 0) or 0
+                ) // max(1, building_count),
+                window_count_from_schedule=int(
+                    seeds_data.get("window_count", 0) or 0
+                ) // max(1, building_count),
+            )
+            results.append(seed)
+
+        return results
 
     # ------------------------------------------------------------------
     # PDF to images
