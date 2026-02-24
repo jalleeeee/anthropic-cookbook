@@ -381,6 +381,119 @@ MULTIFAMILY_CREW_DATA = {
 
 
 # ---------------------------------------------------------------------------
+# STEP 0: Document Review & Scope Identification
+# (Based on Dagostino & Feigenbaum, "Estimating in Building Construction")
+# ---------------------------------------------------------------------------
+
+DOCUMENT_REVIEW_PROMPT = """You are a senior construction estimator performing the INITIAL DOCUMENT REVIEW
+before starting a quantity takeoff. This is the most critical step — you must understand the
+project before you measure anything.
+
+Based on Dagostino & Feigenbaum's methodology, answer EVERY question below by reading
+the drawings. If you cannot determine an answer, write "NOT FOUND — need RFI".
+
+## ARCHITECTURAL DRAWINGS REVIEW
+
+1. **Building Footprint:** What shape is the building footprint? How many total SF?
+2. **Architect's Area:** Is the architect's number for building area correct? Is the
+   architect measuring from the inside corner of the building, and counting balconies in or out?
+3. **Floors:** How many floors are planned, and what is on each floor?
+   What is the SF for each floor?
+4. **Floor-to-Floor:** What is the distance from floor to floor, and from floor to ceiling?
+5. **Perimeter:** What is the building perimeter on each floor?
+   (Note: upper floors may have different perimeters due to setbacks)
+6. **Exterior Walls:** How high is the exterior wall, and what is it made of?
+   Note EVERY cladding type visible (siding, brick, stone, stucco, metal panel, etc.)
+   and which floors/zones each covers.
+7. **Exterior Finish Materials:** What are the principal exterior finish materials?
+   List every material visible on elevations.
+8. **Windows & Doors:** What types of doors and windows are planned?
+   Is there a window schedule? Door schedule? Count totals if visible.
+9. **Roof Systems:** What types of roof systems are specified?
+   (shingle, TPO, metal, built-up, etc.) What is the pitch?
+10. **Building Projections:** Are there balconies, canopies, walkways, soffits, parapets?
+    Count them and estimate sizes.
+11. **Multiple Buildings:** Are there multiple buildings? How many?
+    Are they identical or different? Identify each building.
+
+## PROJECT SCOPE QUICK CHECKLIST
+
+Check all that apply based on what you see in the drawings:
+
+**Lower Floor:** [ ] Concrete [ ] Basement [ ] Crawl space [ ] Slab-on-grade
+**Upper Floors:** [ ] Wood framed [ ] Steel deck [ ] Suspended concrete [ ] Hollow core
+**Roof Structure:** [ ] Wood framing/truss [ ] Steel deck [ ] Precast concrete [ ] Steel joists
+**Exterior Walls:** [ ] Siding [ ] Stone [ ] Block [ ] Brick [ ] Stucco [ ] Concrete [ ] Metal Panel [ ] EIFS [ ] Trims
+**Exterior Openings:** [ ] Curtain wall [ ] Storefront [ ] Windows [ ] Doors
+**Roof Finish:** [ ] Shingle [ ] Built up [ ] Single ply [ ] Metal [ ] Standing seam
+**Building Projections:** [ ] Soffit [ ] Balcony [ ] Patio [ ] Parapet [ ] Canopy [ ] Sidewalk [ ] Breezeway
+
+Return a JSON object:
+{{
+  "document_review": {{
+    "building_footprint_shape": "",
+    "total_building_sf": 0,
+    "architect_area_correct": true,
+    "floors": [
+      {{"floor": 1, "description": "", "sf": 0}},
+      {{"floor": 2, "description": "", "sf": 0}}
+    ],
+    "floor_to_floor_ft": 0,
+    "floor_to_ceiling_ft": 0,
+    "perimeter_lf": 0,
+    "perimeter_varies_by_floor": false,
+    "exterior_wall_height_ft": 0,
+    "exterior_wall_materials": [
+      {{"material": "", "location": "", "floors": "", "approx_pct": 0}}
+    ],
+    "window_schedule_found": false,
+    "window_count_total": 0,
+    "door_schedule_found": false,
+    "ext_door_count_total": 0,
+    "roof_system": "",
+    "roof_pitch": "",
+    "balcony_count": 0,
+    "has_parapet": false,
+    "parapet_height_ft": 0,
+    "building_count": 1,
+    "buildings_identical": true,
+    "building_ids": []
+  }},
+  "scope_checklist": {{
+    "lower_floor": "",
+    "upper_floors": "",
+    "roof_structure": "",
+    "exterior_walls": [],
+    "exterior_openings": [],
+    "roof_finish": "",
+    "building_projections": []
+  }},
+  "seed_values_extracted": {{
+    "footprint_sf": 0,
+    "stories_above_grade": 0,
+    "perimeter_lf": 0,
+    "floor_to_floor_ft": 0,
+    "total_building_height_ft": 0,
+    "parapet_height_ft": 0,
+    "unit_count": 0,
+    "roof_pitch": "",
+    "primary_cladding": "",
+    "secondary_cladding": "",
+    "secondary_cladding_floors": "",
+    "window_count": 0,
+    "balcony_count": 0
+  }},
+  "rfi_needed": [],
+  "notes": ""
+}}
+
+CRITICAL: The "seed_values_extracted" section feeds directly into the deductive
+ratio engine. Extract LABELED DIMENSIONS from the plans — do not measure pixels.
+Read the numbers that the architect already calculated.
+Return ONLY the JSON object."""
+
+
+# ---------------------------------------------------------------------------
 # Enhanced AI prompts for commercial multifamily takeoffs
 # ---------------------------------------------------------------------------
 

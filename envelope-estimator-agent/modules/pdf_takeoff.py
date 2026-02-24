@@ -45,6 +45,7 @@ from config.trades import (
     get_pitch_multiplier,
 )
 from config.multifamily_template import (
+    DOCUMENT_REVIEW_PROMPT,
     MULTIFAMILY_SHEET_ID_PROMPT,
     MULTIFAMILY_BUILDING_DIMS_PROMPT,
     MULTIFAMILY_TRADE_MEASUREMENT_PROMPT,
@@ -176,6 +177,30 @@ class PDFTakeoff:
             return result
 
         logger.info(f"Extracted {len(all_pages)} pages from {len(pdf_paths)} PDFs")
+
+        # Step 0: Document Review (Dagostino method)
+        # AI reads labeled dimensions from plans BEFORE any measurement.
+        # Extracts seed values that feed the deductive ratio engine.
+        doc_review = self._document_review(all_pages)
+        if doc_review:
+            result.raw_ai_responses.append({"step": "document_review", "data": doc_review})
+            # Extract seed values for deductive engine
+            seeds = doc_review.get("seed_values_extracted", {})
+            if seeds.get("footprint_sf") and not is_multifamily:
+                # Auto-detect multifamily from document review
+                if doc_review.get("document_review", {}).get("building_count", 1) > 1:
+                    is_multifamily = True
+                    result.is_multifamily = True
+                scope = doc_review.get("scope_checklist", {})
+                if scope.get("building_projections") and "Balcony" in scope.get("building_projections", []):
+                    is_multifamily = True
+                    result.is_multifamily = True
+            logger.info(
+                f"Document review: seeds extracted — "
+                f"footprint={seeds.get('footprint_sf', 0)} SF, "
+                f"stories={seeds.get('stories_above_grade', 0)}, "
+                f"units={seeds.get('unit_count', 0)}"
+            )
 
         # Step 2: Identify relevant sheets
         result.sheets_identified = self._identify_sheets(
@@ -309,6 +334,53 @@ class PDFTakeoff:
         )
 
         return result
+
+    # ------------------------------------------------------------------
+    # Step 0: Document Review (Dagostino methodology)
+    # ------------------------------------------------------------------
+
+    def _document_review(self, pages: list[dict]) -> dict:
+        """Perform Dagostino-style document review BEFORE any measurement.
+
+        The AI reads the first several pages of the drawing set and answers
+        structured questions about the project. This extracts LABELED
+        dimensions (seed values) that the architect already calculated,
+        rather than measuring pixels.
+
+        Based on: Dagostino & Feigenbaum, "Estimating in Building Construction"
+        Chapter 2 — Estimating Preparation, pp. 15-17.
+        """
+        # Use the first 6-8 pages: typically includes cover sheet, site plan,
+        # floor plans, and at least one elevation — enough for document review
+        review_pages = pages[:min(8, len(pages))]
+
+        content = []
+        for page in review_pages:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": page["media_type"],
+                    "data": page["image_base64"],
+                },
+            })
+
+        content.append({"type": "text", "text": DOCUMENT_REVIEW_PROMPT})
+
+        try:
+            response = self.client.messages.create(
+                model=self.settings.anthropic.model_vision,
+                max_tokens=8192,
+                messages=[{"role": "user", "content": content}],
+            )
+            text = response.content[0].text.strip()
+            json_match = re.search(r"\{.*\}", text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+        except Exception as e:
+            logger.error(f"Document review failed: {e}")
+
+        return {}
 
     # ------------------------------------------------------------------
     # PDF to images
