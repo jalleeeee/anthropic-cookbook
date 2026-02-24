@@ -43,6 +43,7 @@ from modules.proposal_gen import ProposalGenerator
 from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantities
 from modules.live_catalog import LiveCatalog
 from modules.rom_estimator import ROMEstimator
+from modules.measurement_report import MeasurementReportGenerator
 from modules.self_service_scan import (
     CustomerIntakeForm,
     FiveDEstimate,
@@ -90,6 +91,7 @@ itb_intake = ITBIntake(settings)
 deductive = DeductiveEngine()
 live_catalog = LiveCatalog(settings)
 rom_estimator = ROMEstimator(settings)
+report_gen = MeasurementReportGenerator(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -897,6 +899,134 @@ async def api_catalog_materials(q: str = ""):
             for m in prices
         ],
     })
+
+
+# ---------------------------------------------------------------------------
+# Measurement Report — HOVER-style output with pricing
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/report/complete-measurements")
+async def api_complete_measurements(request: Request):
+    """Generate a HOVER-style Complete Measurements report with pricing.
+
+    Produces the same structured output as HOVER's measurement PDF:
+    - Siding summary (facades, openings, trims, corners, waste totals)
+    - Roof summary (facets, ridges, valleys, pitch breakdown, waste tiers)
+    - Footprint (perimeter, area, stories)
+    - Siding per elevation (section-by-section breakdown)
+    - PLUS: full priced estimate (material/labor/equipment per trade)
+
+    Input JSON:
+    {
+        "property_name": "2 BR ESSENTIAL 24-PLEX",
+        "address": "123 Main St, Southchase FL 32824",
+        "building_id": "Bldg A",
+        "footprint_sf": 7998,
+        "stories_above_grade": 2,
+        "unit_count": 24,
+        "perimeter_lf": 689.5,          // optional — derived if not provided
+        "footprint_length_ft": 0,       // optional
+        "footprint_width_ft": 0,        // optional
+        "roof_pitch": "4:12",
+        "roof_type": "asphalt shingle",
+        "primary_cladding": "fiber_cement_lap",
+        "building_shape": "typical_multifamily",
+        "construction_type": "V-A"
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    property_name = data.get("property_name", "Untitled Property")
+    address = data.get("address", "")
+
+    seeds = SeedValues(
+        building_id=data.get("building_id", "Building A"),
+        footprint_sf=float(data.get("footprint_sf", 0)),
+        stories_above_grade=int(data.get("stories_above_grade", 0)),
+        stories_below_grade=int(data.get("stories_below_grade", 0)),
+        footprint_length_ft=float(data.get("footprint_length_ft", 0)),
+        footprint_width_ft=float(data.get("footprint_width_ft", 0)),
+        perimeter_lf=float(data.get("perimeter_lf", 0)),
+        floor_to_floor_ft=float(data.get("floor_to_floor_ft", 0)),
+        total_building_height_ft=float(data.get("total_building_height_ft", 0)),
+        parapet_height_ft=float(data.get("parapet_height_ft", 0)),
+        unit_count=int(data.get("unit_count", 0)),
+        unit_mix=data.get("unit_mix", {}),
+        roof_pitch=data.get("roof_pitch", "flat"),
+        roof_type=data.get("roof_type", "asphalt shingle"),
+        building_shape=data.get("building_shape", "typical_multifamily"),
+        construction_type=data.get("construction_type", "V-A"),
+        has_podium=data.get("has_podium", False),
+        podium_height_ft=float(data.get("podium_height_ft", 0)),
+        primary_cladding=data.get("primary_cladding", "fiber_cement_lap"),
+        secondary_cladding=data.get("secondary_cladding", ""),
+        secondary_cladding_floors=data.get("secondary_cladding_floors", ""),
+        corridor_type=data.get("corridor_type", "interior"),
+        balcony_count=int(data.get("balcony_count", 0)),
+        avg_balcony_sf=float(data.get("avg_balcony_sf", 60)),
+        window_count_from_schedule=int(data.get("window_count_from_schedule", 0)),
+        door_count_from_schedule=int(data.get("door_count_from_schedule", 0)),
+    )
+
+    report = report_gen.from_seeds(
+        property_name=property_name,
+        seeds=seeds,
+        address=address,
+    )
+
+    return JSONResponse(report_gen.report_to_dict(report))
+
+
+@app.post("/api/v1/report/from-hover-data")
+async def api_report_from_hover(request: Request):
+    """Generate a priced report from HOVER measurement data.
+
+    If a customer already has HOVER measurements, they can paste
+    the data here and we'll add pricing on top.
+
+    Input JSON matches HOVER's export format with key fields:
+    {
+        "property_name": "...",
+        "facades_siding_sf": 16443,
+        "facades_other_sf": 2344,
+        "openings_siding_sf": 1687,
+        "openings_other_sf": 608,
+        "openings_siding_qty": 69,
+        "openings_other_qty": 32,
+        "roof_area_sf": 10450,
+        "roof_pitch": "4/12",
+        "footprint_perimeter_lf": 689.5,
+        "footprint_area_sf": 7998,
+        "stories": 2,
+        "primary_cladding": "fiber_cement_lap"
+    }
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    # Convert HOVER-style measurements to our seed values
+    seeds = SeedValues(
+        footprint_sf=float(data.get("footprint_area_sf", 0)),
+        stories_above_grade=int(data.get("stories", 1)),
+        perimeter_lf=float(data.get("footprint_perimeter_lf", 0)),
+        roof_pitch=data.get("roof_pitch", "4:12"),
+        primary_cladding=data.get("primary_cladding", "fiber_cement_lap"),
+        window_count_from_schedule=int(data.get("openings_siding_qty", 0)),
+        door_count_from_schedule=int(data.get("openings_other_qty", 0)),
+    )
+
+    report = report_gen.from_seeds(
+        property_name=data.get("property_name", "HOVER Import"),
+        seeds=seeds,
+        address=data.get("address", ""),
+    )
+
+    return JSONResponse(report_gen.report_to_dict(report))
 
 
 @app.post("/api/v1/feedback")

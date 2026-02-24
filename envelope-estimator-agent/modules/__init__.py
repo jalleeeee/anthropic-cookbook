@@ -9,3 +9,7 @@ from modules.ai_learning_engine import AILearningEngine
 from modules.deductive_engine import DeductiveEngine, SeedValues, DerivedQuantities
 from modules.live_catalog import LiveCatalog, CatalogEntry, CatalogSearchResult
 from modules.rom_estimator import ROMEstimator, ROMEstimate
+from modules.measurement_report import (
+    MeasurementReportGenerator,
+    CompleteMeasurementReport,
+)
