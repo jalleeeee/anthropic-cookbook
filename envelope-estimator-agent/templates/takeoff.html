@@ -27,9 +27,69 @@
             <div id="fileList" style="margin-top:12px"></div>
           </div>
 
-          <div class="fg">
-            <label>Project Name</label>
-            <input class="fi" name="project_name" placeholder="e.g., Smith Residence Re-Roof">
+          <div class="fr2">
+            <div class="fg">
+              <label>Project Name</label>
+              <input class="fi" name="project_name" placeholder="e.g., Parkview Apartments Phase 1">
+            </div>
+            <div class="fg">
+              <label>Project Type</label>
+              <select class="fi" name="project_type" id="projectType" onchange="onProjectTypeChange()">
+                <option value="">Auto-Detect from Drawings</option>
+                <option value="multifamily" selected>Commercial Multifamily</option>
+                <option value="single_family">Single Family Residential</option>
+                <option value="commercial">Commercial (non-residential)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Multifamily quick-config panel -->
+          <div id="mfConfig" class="card" style="background:var(--accent-light);border:1px solid var(--accent);margin-bottom:16px;padding:16px">
+            <div style="font-weight:700;font-size:0.88em;margin-bottom:10px;color:var(--accent)">Commercial Multifamily Template</div>
+            <div class="fr2" style="gap:12px">
+              <div class="fg">
+                <label style="font-size:0.8em">Construction Type</label>
+                <select class="fi" name="construction_type" style="font-size:0.85em">
+                  <option value="V-A">Type V-A — Wood Frame (3-4 story)</option>
+                  <option value="III-A">Type III-A — Wood over Podium (4-5 story)</option>
+                  <option value="II-A">Type II-A — Steel Frame (5+ story)</option>
+                  <option value="V-B">Type V-B — Wood Frame (3 story max)</option>
+                </select>
+              </div>
+              <div class="fg">
+                <label style="font-size:0.8em">Approx. Unit Count</label>
+                <input class="fi" name="unit_count" type="number" placeholder="e.g., 200" style="font-size:0.85em">
+              </div>
+            </div>
+            <div class="fr2" style="gap:12px;margin-top:8px">
+              <div class="fg">
+                <label style="font-size:0.8em">Primary Cladding</label>
+                <select class="fi" name="primary_cladding" style="font-size:0.85em">
+                  <option value="fiber_cement_lap">Fiber Cement Lap Siding</option>
+                  <option value="fiber_cement_panel">Fiber Cement Panel</option>
+                  <option value="vinyl_siding">Vinyl Siding</option>
+                  <option value="metal_panel">Metal Panel</option>
+                  <option value="stucco_eifs">Stucco / EIFS</option>
+                  <option value="brick_veneer">Brick Veneer</option>
+                  <option value="composite_panel">Composite Panel</option>
+                  <option value="mixed_cladding">Mixed (multiple types)</option>
+                </select>
+              </div>
+              <div class="fg">
+                <label style="font-size:0.8em">Roof System</label>
+                <select class="fi" name="roof_system" style="font-size:0.85em">
+                  <option value="tpo_single_ply">TPO Single-Ply Membrane</option>
+                  <option value="pvc_single_ply">PVC Single-Ply Membrane</option>
+                  <option value="epdm_single_ply">EPDM Single-Ply</option>
+                  <option value="mod_bit">Modified Bitumen</option>
+                  <option value="steep_slope_shingle">Steep-Slope Shingle</option>
+                  <option value="standing_seam_metal">Standing Seam Metal</option>
+                </select>
+              </div>
+            </div>
+            <div style="font-size:0.75em;color:var(--text-3);margin-top:8px">
+              These defaults help the AI focus its analysis. Actual measurements are extracted from your drawings.
+            </div>
           </div>
 
           <div class="fg">
@@ -192,6 +252,11 @@
 <script>
 let selectedFiles = [];
 
+function onProjectTypeChange() {
+  const pt = document.getElementById('projectType').value;
+  document.getElementById('mfConfig').style.display = pt === 'multifamily' ? 'block' : 'none';
+}
+
 function handleDrop(e) {
   const files = e.dataTransfer.files;
   handleFiles(files);
@@ -248,6 +313,15 @@ document.getElementById('takeoffForm').addEventListener('submit', async function
   form.append('project_name', this.project_name.value);
   form.append('address', this.address.value || '');
   form.append('homeowner', this.homeowner.value || '');
+  form.append('project_type', this.project_type.value || '');
+
+  // Multifamily-specific fields
+  if (this.project_type.value === 'multifamily') {
+    form.append('construction_type', this.construction_type.value || '');
+    form.append('unit_count', this.unit_count.value || '');
+    form.append('primary_cladding', this.primary_cladding.value || '');
+    form.append('roof_system', this.roof_system.value || '');
+  }
 
   // Gather selected trades
   const trades = [];

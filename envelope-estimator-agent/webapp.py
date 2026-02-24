@@ -429,6 +429,11 @@ async def api_takeoff_upload(
     address: str = Form(""),
     homeowner: str = Form(""),
     trade_codes: str = Form(""),
+    project_type: str = Form(""),
+    construction_type: str = Form(""),
+    unit_count: str = Form(""),
+    primary_cladding: str = Form(""),
+    roof_system: str = Form(""),
     pdfs: list[UploadFile] = File(...),
 ):
     """Run the full PDF takeoff → cost estimate → proposal pipeline.
@@ -484,6 +489,7 @@ async def api_takeoff_upload(
         pdf_paths=pdf_paths,
         trades=trades,
         project_id=project_id,
+        project_type=project_type,
     )
 
     # Step 2: Run cost engine (DDC-CWICR pricing)

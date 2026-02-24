@@ -1,14 +1,26 @@
 """
 PDF Blueprint Takeoff Module
 
-Uses Claude Vision to:
-1. Identify relevant sheets (elevations, roof plans, sections, details, schedules)
-2. Detect drawing scale
-3. Extract dimensions and quantities per trade
-4. Validate measurements with 4-way parallel calculation
-5. Apply pitch multipliers and waste factors
+Uses Claude Vision to read 2D construction drawings and perform a thorough
+quantity takeoff focused on the BUILDING ENVELOPE.
 
-Based on takeoff-reader-ai methodology with envelope-trade specialization.
+Pipeline:
+1. Identify relevant sheets (elevations, roof plans, sections, details, schedules)
+2. Detect drawing scale and building type (single-family vs multifamily)
+3. Extract building dimensions (per-building for multifamily)
+4. Extract per-trade quantities with per-elevation measurement
+5. Extract window/door schedules for deductions
+6. Compute line items with waste factors and pitch multipliers
+7. Validate with independent secondary AI pass + ratio checks
+
+Supports both:
+- Residential single-family (simple footprint, pitched roof)
+- Commercial multifamily (multiple buildings, podium, mixed cladding zones,
+  balconies, corridors, flat/mixed roofs, high window counts)
+
+Aligned with:
+- CSI MasterFormat Divisions 04-09 for envelope scope
+- DDC CWICR resource-based cost methodology for downstream pricing
 """
 
 import base64
@@ -31,6 +43,14 @@ from config.trades import (
     Trade,
     TradeComponent,
     get_pitch_multiplier,
+)
+from config.multifamily_template import (
+    MULTIFAMILY_SHEET_ID_PROMPT,
+    MULTIFAMILY_BUILDING_DIMS_PROMPT,
+    MULTIFAMILY_TRADE_MEASUREMENT_PROMPT,
+    MULTIFAMILY_DEDUCTIONS_PROMPT,
+    MULTIFAMILY_VALIDATION_PROMPT,
+    get_default_multifamily_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,10 +116,23 @@ class TakeoffResult:
     confidence_score: float = 0.0
     warnings: list[str] = field(default_factory=list)
     raw_ai_responses: list[dict] = field(default_factory=list)
+    # Multifamily extensions
+    is_multifamily: bool = False
+    building_count: int = 1
+    total_units: int = 0
+    buildings_data: list[dict] = field(default_factory=list)
+    ratio_checks: dict = field(default_factory=dict)
 
 
 class PDFTakeoff:
-    """Extracts quantities from PDF blueprints using Claude Vision."""
+    """Extracts quantities from PDF blueprints using Claude Vision.
+
+    Supports two modes:
+    - Standard (single-family / small commercial): simple prompts
+    - Multifamily (commercial apartments/condos): enhanced prompts with
+      per-building measurement, elevation zones, ratio checks, and
+      DDC CWICR-aligned component breakdowns
+    """
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -110,13 +143,26 @@ class PDFTakeoff:
         pdf_paths: list[str],
         trades: list[Trade],
         project_id: str = "",
+        project_type: str = "",
     ) -> TakeoffResult:
-        """Run full takeoff pipeline on PDF plans."""
+        """Run full takeoff pipeline on PDF plans.
+
+        Args:
+            pdf_paths: List of PDF file paths to process.
+            trades: List of Trade objects defining what to measure.
+            project_id: Unique project identifier.
+            project_type: "multifamily" to use enhanced commercial prompts.
+                          Auto-detected from drawings if empty.
+        """
+        is_multifamily = project_type.lower() in (
+            "multifamily", "commercial_multifamily", "apartments", "condos",
+        )
 
         result = TakeoffResult(
             project_id=project_id,
             sheets_identified=[],
             line_items=[],
+            is_multifamily=is_multifamily,
         )
 
         # Step 1: Convert PDFs to images for Claude Vision
@@ -132,10 +178,26 @@ class PDFTakeoff:
         logger.info(f"Extracted {len(all_pages)} pages from {len(pdf_paths)} PDFs")
 
         # Step 2: Identify relevant sheets
-        result.sheets_identified = self._identify_sheets(all_pages, trades)
+        result.sheets_identified = self._identify_sheets(
+            all_pages, trades, is_multifamily=is_multifamily
+        )
         logger.info(
             f"Identified {len(result.sheets_identified)} relevant sheets"
         )
+
+        # Auto-detect multifamily if not explicitly set
+        if not is_multifamily:
+            mf_signals = sum(
+                1 for s in result.sheets_identified
+                if any(kw in s.title.lower() for kw in (
+                    "bldg", "building", "unit plan", "typical unit",
+                    "corridor", "breezeway", "podium",
+                ))
+            )
+            if mf_signals >= 2:
+                is_multifamily = True
+                result.is_multifamily = True
+                logger.info("Auto-detected multifamily project from sheet titles")
 
         if not result.sheets_identified:
             result.warnings.append("No relevant sheets identified in plans")
@@ -143,15 +205,47 @@ class PDFTakeoff:
 
         # Step 3: Extract building dimensions (global measurements)
         building_dims = self._extract_building_dimensions(
-            all_pages, result.sheets_identified
+            all_pages, result.sheets_identified,
+            is_multifamily=is_multifamily,
         )
-        result.roof_pitch = building_dims.get("roof_pitch", "")
+
+        # For multifamily: aggregate across buildings
+        if is_multifamily and "buildings" in building_dims:
+            buildings = building_dims["buildings"]
+            result.buildings_data = buildings
+            result.building_count = len(buildings)
+            result.total_units = sum(
+                b.get("unit_count_estimate", 0) for b in buildings
+            )
+            # Aggregate totals
+            result.building_footprint_sf = sum(
+                b.get("footprint_sf", 0) for b in buildings
+            )
+            result.building_perimeter_lf = sum(
+                b.get("perimeter_lf", 0) for b in buildings
+            )
+            result.gross_wall_area_sf = sum(
+                b.get("gross_wall_area_sf", 0) for b in buildings
+            )
+            # Use first building's roof pitch as default
+            first = buildings[0] if buildings else {}
+            result.roof_pitch = first.get("roof_pitch", "flat")
+            result.wall_height_ft = first.get("total_building_height_ft", 0)
+            result.story_count = max(
+                (b.get("stories_above_grade", 1) for b in buildings), default=1
+            )
+            site_totals = building_dims.get("site_totals", {})
+            if site_totals.get("total_gross_wall_sf"):
+                result.gross_wall_area_sf = site_totals["total_gross_wall_sf"]
+        else:
+            result.roof_pitch = building_dims.get("roof_pitch", "")
+            result.building_footprint_sf = building_dims.get("footprint_sf", 0)
+            result.building_perimeter_lf = building_dims.get("perimeter_lf", 0)
+            result.wall_height_ft = building_dims.get("wall_height_ft", 0)
+            result.story_count = building_dims.get("story_count", 1)
+            result.gross_wall_area_sf = building_dims.get("gross_wall_area_sf", 0)
+
         result.roof_pitch_multiplier = get_pitch_multiplier(result.roof_pitch)
-        result.building_footprint_sf = building_dims.get("footprint_sf", 0)
-        result.building_perimeter_lf = building_dims.get("perimeter_lf", 0)
-        result.wall_height_ft = building_dims.get("wall_height_ft", 0)
-        result.story_count = building_dims.get("story_count", 1)
-        result.gross_wall_area_sf = building_dims.get("gross_wall_area_sf", 0)
 
         # Step 4: Extract per-trade measurements
         measurements = []
@@ -169,16 +263,28 @@ class PDFTakeoff:
                 ]
 
             trade_measurements = self._extract_trade_measurements(
-                all_pages, relevant_sheets, trade, building_dims
+                all_pages, relevant_sheets, trade, building_dims,
+                is_multifamily=is_multifamily,
             )
             measurements.extend(trade_measurements)
 
         # Step 5: Extract window/door deductions
         deductions = self._extract_deductions(
-            all_pages, result.sheets_identified
+            all_pages, result.sheets_identified,
+            is_multifamily=is_multifamily,
         )
-        result.window_deductions_sf = deductions.get("window_area_sf", 0)
-        result.door_deductions_sf = deductions.get("door_area_sf", 0)
+        # Multifamily deductions have a richer structure
+        if is_multifamily and "summary" in deductions:
+            summary = deductions["summary"]
+            result.window_deductions_sf = (
+                summary.get("total_window_area_sf", 0)
+                + summary.get("total_sgd_area_sf", 0)
+                + summary.get("total_storefront_sf", 0)
+            )
+            result.door_deductions_sf = summary.get("total_door_area_sf", 0)
+        else:
+            result.window_deductions_sf = deductions.get("window_area_sf", 0)
+            result.door_deductions_sf = deductions.get("door_area_sf", 0)
         result.net_wall_area_sf = (
             result.gross_wall_area_sf
             - result.window_deductions_sf
@@ -192,7 +298,7 @@ class PDFTakeoff:
 
         # Step 7: Validate with secondary AI pass
         result.validation_variance_pct = self._validate_takeoff(
-            all_pages, result
+            all_pages, result, is_multifamily=is_multifamily,
         )
         result.confidence_score = self._compute_confidence(result)
 
@@ -282,7 +388,8 @@ class PDFTakeoff:
     # ------------------------------------------------------------------
 
     def _identify_sheets(
-        self, pages: list[dict], trades: list[Trade]
+        self, pages: list[dict], trades: list[Trade],
+        is_multifamily: bool = False,
     ) -> list[SheetInfo]:
         """Use Claude Vision to identify relevant drawing sheets."""
 
@@ -301,9 +408,12 @@ class PDFTakeoff:
                 },
             })
 
-        content.append({
-            "type": "text",
-            "text": f"""Analyze these construction drawing pages. For each page,
+        if is_multifamily:
+            prompt_text = MULTIFAMILY_SHEET_ID_PROMPT.format(
+                trade_names=trade_names
+            )
+        else:
+            prompt_text = f"""Analyze these construction drawing pages. For each page,
 identify:
 1. Sheet ID (e.g., A-201, S-101, A-501)
 2. Sheet type: one of [elevation, roof_plan, floor_plan, section, detail,
@@ -326,8 +436,9 @@ Return a JSON array:
 
 Only include pages that contain architectural drawings relevant to the
 envelope trades listed. Skip cover sheets, site plans, MEP sheets, etc.
-Return ONLY the JSON array.""",
-        })
+Return ONLY the JSON array."""
+
+        content.append({"type": "text", "text": prompt_text})
 
         try:
             response = self.client.messages.create(
@@ -371,7 +482,8 @@ Return ONLY the JSON array.""",
     # ------------------------------------------------------------------
 
     def _extract_building_dimensions(
-        self, pages: list[dict], sheets: list[SheetInfo]
+        self, pages: list[dict], sheets: list[SheetInfo],
+        is_multifamily: bool = False,
     ) -> dict:
         """Extract global building dimensions from plans."""
 
@@ -398,9 +510,10 @@ Return ONLY the JSON array.""",
                 },
             })
 
-        content.append({
-            "type": "text",
-            "text": """Analyze these construction drawings and extract the
+        if is_multifamily:
+            prompt_text = MULTIFAMILY_BUILDING_DIMS_PROMPT
+        else:
+            prompt_text = """Analyze these construction drawings and extract the
 building's key dimensions. You are an expert construction estimator.
 
 Measure carefully using the drawing scale. Return a JSON object:
@@ -431,8 +544,9 @@ IMPORTANT:
 - gross_wall_area = perimeter × wall_height × story_count
 - Include overhang in roof area calculations
 - Note if any values are estimated vs measured directly
-- Return ONLY the JSON object""",
-        })
+- Return ONLY the JSON object"""
+
+        content.append({"type": "text", "text": prompt_text})
 
         try:
             response = self.client.messages.create(
@@ -459,6 +573,7 @@ IMPORTANT:
         sheets: list[SheetInfo],
         trade: Trade,
         building_dims: dict,
+        is_multifamily: bool = False,
     ) -> list[Measurement]:
         """Extract measurements for a specific trade from relevant sheets."""
 
@@ -487,9 +602,37 @@ IMPORTANT:
                 },
             })
 
-        content.append({
-            "type": "text",
-            "text": f"""You are an expert commercial construction estimator
+        if is_multifamily:
+            # Build rich building context from multifamily dims
+            if "buildings" in building_dims:
+                bldg_lines = []
+                for b in building_dims["buildings"]:
+                    bldg_lines.append(
+                        f"  {b.get('building_id', 'Building')}: "
+                        f"{b.get('footprint_sf', '?')} SF footprint, "
+                        f"{b.get('perimeter_lf', '?')} LF perimeter, "
+                        f"{b.get('stories_above_grade', '?')} stories, "
+                        f"{b.get('total_building_height_ft', '?')} ft tall, "
+                        f"gross wall: {b.get('gross_wall_area_sf', '?')} SF, "
+                        f"roof: {b.get('roof_area_plan_sf', '?')} SF, "
+                        f"~{b.get('unit_count_estimate', '?')} units, "
+                        f"balconies: {b.get('balcony_count', '?')}"
+                    )
+                building_context = "\n".join(bldg_lines)
+            else:
+                building_context = (
+                    f"Footprint: {building_dims.get('footprint_sf', '?')} SF, "
+                    f"Perimeter: {building_dims.get('perimeter_lf', '?')} LF, "
+                    f"Stories: {building_dims.get('story_count', '?')}"
+                )
+
+            prompt_text = MULTIFAMILY_TRADE_MEASUREMENT_PROMPT.format(
+                trade_name=trade.name,
+                building_context=building_context,
+                component_desc=component_desc,
+            )
+        else:
+            prompt_text = f"""You are an expert commercial construction estimator
 specializing in the building envelope. Analyze these drawings for the
 **{trade.name}** trade.
 
@@ -527,8 +670,9 @@ RULES:
 - Always note which sheet/drawing you measured from
 - Set confidence 0.0-1.0 (1.0 = dimension clearly labeled on drawing)
 - Set is_estimated=true if you had to infer the dimension
-- Return ONLY the JSON array""",
-        })
+- Return ONLY the JSON array"""
+
+        content.append({"type": "text", "text": prompt_text})
 
         try:
             response = self.client.messages.create(
@@ -567,7 +711,8 @@ RULES:
     # ------------------------------------------------------------------
 
     def _extract_deductions(
-        self, pages: list[dict], sheets: list[SheetInfo]
+        self, pages: list[dict], sheets: list[SheetInfo],
+        is_multifamily: bool = False,
     ) -> dict:
         """Extract window and door schedules for wall area deductions."""
 
@@ -592,9 +737,10 @@ RULES:
                 },
             })
 
-        content.append({
-            "type": "text",
-            "text": """Extract the window schedule and door schedule from
+        if is_multifamily:
+            prompt_text = MULTIFAMILY_DEDUCTIONS_PROMPT
+        else:
+            prompt_text = """Extract the window schedule and door schedule from
 these drawings. Calculate the total area to deduct from gross wall area.
 
 For each window type: width × height × quantity = total area
@@ -613,8 +759,9 @@ Return JSON:
   "total_deduction_sf": 0
 }
 
-Return ONLY the JSON object.""",
-        })
+Return ONLY the JSON object."""
+
+        content.append({"type": "text", "text": prompt_text})
 
         try:
             response = self.client.messages.create(
@@ -705,11 +852,13 @@ Return ONLY the JSON object.""",
     # ------------------------------------------------------------------
 
     def _validate_takeoff(
-        self, pages: list[dict], result: TakeoffResult
+        self, pages: list[dict], result: TakeoffResult,
+        is_multifamily: bool = False,
     ) -> float:
         """Run a verification pass using the secondary model.
 
         Returns the variance percentage between primary and verification.
+        For multifamily, also performs ratio checks against industry benchmarks.
         """
         if not result.line_items:
             return 0.0
@@ -729,9 +878,10 @@ Return ONLY the JSON object.""",
                 },
             })
 
-        content.append({
-            "type": "text",
-            "text": f"""You are a senior estimator performing a QA review.
+        if is_multifamily:
+            prompt_text = MULTIFAMILY_VALIDATION_PROMPT.format(summary=summary)
+        else:
+            prompt_text = f"""You are a senior estimator performing a QA review.
 Verify this takeoff against the drawings.
 
 TAKEOFF TO VERIFY:
@@ -756,8 +906,9 @@ Return JSON:
   "recommendation": "approve" or "review_needed"
 }}
 
-Return ONLY the JSON object.""",
-        })
+Return ONLY the JSON object."""
+
+        content.append({"type": "text", "text": prompt_text})
 
         try:
             response = self.client.messages.create(
@@ -774,6 +925,10 @@ Return ONLY the JSON object.""",
                 if data.get("issues"):
                     for issue in data["issues"]:
                         result.warnings.append(f"Validation: {issue}")
+
+                # Store ratio checks for multifamily
+                if is_multifamily and "ratio_checks" in data:
+                    result.ratio_checks = data["ratio_checks"]
 
                 return abs(float(variance))
         except Exception as e:
@@ -803,8 +958,25 @@ Return ONLY the JSON object.""",
 
     def _format_takeoff_summary(self, result: TakeoffResult) -> str:
         """Format takeoff results as readable text."""
-        lines = [
-            f"Building: {result.building_footprint_sf} SF footprint, "
+        lines = []
+
+        if result.is_multifamily and result.buildings_data:
+            lines.append(
+                f"PROJECT TYPE: Commercial Multifamily — "
+                f"{result.building_count} building(s), "
+                f"~{result.total_units} units"
+            )
+            for b in result.buildings_data:
+                lines.append(
+                    f"  {b.get('building_id', 'Building')}: "
+                    f"{b.get('footprint_sf', '?')} SF footprint, "
+                    f"{b.get('stories_above_grade', '?')} stories, "
+                    f"{b.get('gross_wall_area_sf', '?')} SF wall area"
+                )
+            lines.append("")
+
+        lines.extend([
+            f"TOTALS: {result.building_footprint_sf} SF footprint, "
             f"{result.story_count} stories, "
             f"roof pitch {result.roof_pitch}",
             f"Gross wall area: {result.gross_wall_area_sf} SF",
@@ -813,7 +985,7 @@ Return ONLY the JSON object.""",
             f"Net wall area: {result.net_wall_area_sf} SF",
             "",
             "LINE ITEMS:",
-        ]
+        ])
         for item in result.line_items:
             lines.append(
                 f"  {item.trade_name} - {item.component_name}: "
