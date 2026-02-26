@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scan Error</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Inter',system-ui,sans-serif; background:#f5f6f8; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+  .error-card { background:#fff; border-radius:12px; padding:40px; text-align:center; max-width:400px; border:1px solid #e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+  .error-card .icon { font-size:3em; margin-bottom:16px; }
+  .error-card h2 { font-size:1.2em; margin-bottom:8px; color:#111827; }
+  .error-card p { font-size:0.9em; color:#4b5563; line-height:1.6; }
+</style>
+</head>
+<body>
+  <div class="error-card">
+    <div class="icon">&#9888;&#65039;</div>
+    <h2>{{ error }}</h2>
+    <p>This scan link is no longer valid. Please contact us for a new link.</p>
+  </div>
+</body>
+</html>

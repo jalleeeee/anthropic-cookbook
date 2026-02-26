@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% set active_page = "estimates" %}
+
+{% block title %}Estimates — Envelope Estimator{% endblock %}
+{% block page_title %}Estimates{% endblock %}
+
+{% block content %}
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">Total Estimates</div>
+    <div class="stat-val blue">{{ estimates|length }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Total Value</div>
+    <div class="stat-val green">${{ "{:,.0f}".format(estimates|sum(attribute='estimated_total')) }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Avg Confidence</div>
+    {% set avg_conf = (estimates|sum(attribute='confidence_score') / estimates|length * 100) if estimates|length > 0 else 0 %}
+    <div class="stat-val">{{ "%.0f"|format(avg_conf) }}%</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    All Estimates
+    <a href="/self-service" class="btn btn-primary btn-sm">+ New Estimate</a>
+  </div>
+  <div class="card-body" style="padding:0">
+    {% if estimates %}
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>Estimate ID</th>
+          <th>Workflow</th>
+          <th>Project Type</th>
+          <th>Region</th>
+          <th>Area (SF)</th>
+          <th class="r">Estimated Total</th>
+          <th class="r">$/SF</th>
+          <th class="r">Confidence</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in estimates %}
+        <tr>
+          <td><a href="/estimates/{{ e.estimate_id }}" style="color:var(--accent);text-decoration:none;font-weight:600;font-size:0.85em">{{ e.estimate_id[:24] }}</a></td>
+          <td><span class="pill pill-{% if e.workflow == 'self_service' %}blue{% elif e.workflow == 'commercial' %}green{% elif e.workflow == 'loss_report' %}yellow{% else %}gray{% endif %}">{{ e.workflow }}</span></td>
+          <td style="font-size:0.85em">{{ e.project_type | replace('_',' ') | title }}</td>
+          <td style="font-size:0.85em">{{ e.state or e.region }}</td>
+          <td class="r">{{ "{:,.0f}".format(e.total_sf) }}</td>
+          <td class="r" style="font-weight:700">${{ "{:,.2f}".format(e.estimated_total) }}</td>
+          <td class="r">${{ "{:,.2f}".format(e.cost_per_sf) }}</td>
+          <td class="r">{{ "%.0f"|format(e.confidence_score * 100) }}%</td>
+          <td style="font-size:0.8em;color:var(--text-3)">{{ e.created_at[:10] if e.created_at else '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <h3>No estimates yet</h3>
+      <p>Create your first estimate to see it here.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

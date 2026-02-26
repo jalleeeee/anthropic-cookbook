@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% set active_page = "self-service" %}
+
+{% block title %}New Estimate — Envelope Estimator{% endblock %}
+{% block page_title %}New Self-Service Estimate{% endblock %}
+
+{% block content %}
+<div class="g2">
+  <!-- INTAKE FORM -->
+  <div class="card">
+    <div class="card-header">Customer Intake Form</div>
+    <div class="card-body">
+      <form id="intakeForm" action="/api/v1/self-service/create" method="POST">
+
+        <div style="font-weight:700;font-size:0.88em;margin-bottom:12px;color:var(--text-2)">Contact Information</div>
+        <div class="fr2">
+          <div class="fg">
+            <label>Customer Name *</label>
+            <input class="fi" name="customer_name" required placeholder="Jane Doe">
+          </div>
+          <div class="fg">
+            <label>Email *</label>
+            <input class="fi" type="email" name="customer_email" required placeholder="jane@example.com">
+          </div>
+        </div>
+        <div class="fr2">
+          <div class="fg">
+            <label>Phone</label>
+            <input class="fi" name="customer_phone" placeholder="(555) 123-4567">
+          </div>
+          <div class="fg">
+            <label>Company (if applicable)</label>
+            <input class="fi" name="company_name" placeholder="Company name">
+          </div>
+        </div>
+
+        <div style="font-weight:700;font-size:0.88em;margin-bottom:12px;margin-top:8px;color:var(--text-2)">Property Details</div>
+        <div class="fg">
+          <label>Property Address *</label>
+          <input class="fi" name="property_address" required placeholder="123 Main St">
+        </div>
+        <div class="fr3">
+          <div class="fg">
+            <label>City</label>
+            <input class="fi" name="city" placeholder="Denver">
+          </div>
+          <div class="fg">
+            <label>State</label>
+            <input class="fi" name="state" placeholder="CO">
+          </div>
+          <div class="fg">
+            <label>ZIP</label>
+            <input class="fi" name="postal_code" placeholder="80202">
+          </div>
+        </div>
+
+        <div style="font-weight:700;font-size:0.88em;margin-bottom:12px;margin-top:8px;color:var(--text-2)">Project</div>
+        <div class="fr2">
+          <div class="fg">
+            <label>Project Type *</label>
+            <select class="fs" name="project_type" id="projectType" onchange="toggleInsurance()">
+              {% for pt in project_types %}
+              <option value="{{ pt.value }}">{{ pt.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="fg">
+            <label>Delivery Method</label>
+            <select class="fs" name="delivery_method">
+              <option value="email">Email</option>
+              <option value="sms">SMS</option>
+              <option value="both">Email + SMS</option>
+            </select>
+          </div>
+        </div>
+        <div class="fg">
+          <label>Project Description</label>
+          <textarea class="ft" name="project_description" placeholder="Describe the work needed — the more detail, the better the estimate..."></textarea>
+        </div>
+
+        <!-- Insurance fields (shown conditionally) -->
+        <div id="insuranceFields" style="display:none">
+          <div style="font-weight:700;font-size:0.88em;margin-bottom:12px;color:var(--text-2)">Insurance Information</div>
+          <div class="fr2">
+            <div class="fg">
+              <label>Cause of Loss</label>
+              <select class="fs" name="cause_of_loss">
+                <option value="">Select...</option>
+                <option value="hail">Hail</option>
+                <option value="wind">Wind</option>
+                <option value="water">Water</option>
+                <option value="fire">Fire</option>
+                <option value="impact">Impact</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Date of Loss</label>
+              <input class="fi" type="date" name="date_of_loss">
+            </div>
+          </div>
+          <input type="hidden" name="is_insurance_claim" id="isInsurance" value="false">
+        </div>
+
+        <div style="margin-top:8px">
+          <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px">
+            Create Scan Session &amp; Send Link
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- HOW IT WORKS + PREVIEW -->
+  <div>
+    <div class="card mb">
+      <div class="card-header">How It Works</div>
+      <div class="card-body" style="font-size:0.88em;line-height:1.7">
+        <div style="display:flex;gap:14px;margin-bottom:16px;align-items:flex-start">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.8em;flex-shrink:0">1</div>
+          <div><strong>You fill out this form</strong> with the customer's info and project type.</div>
+        </div>
+        <div style="display:flex;gap:14px;margin-bottom:16px;align-items:flex-start">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.8em;flex-shrink:0">2</div>
+          <div><strong>Customer receives a magic link</strong> via email/SMS with guided photo instructions.</div>
+        </div>
+        <div style="display:flex;gap:14px;margin-bottom:16px;align-items:flex-start">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--accent-light);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.8em;flex-shrink:0">3</div>
+          <div><strong>Customer takes photos</strong> following step-by-step guidance on their phone.</div>
+        </div>
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--green-bg);color:var(--green);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.8em;flex-shrink:0">4</div>
+          <div><strong>5D estimate generates instantly</strong> — 3D scope + schedule + cost. No site visit needed.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Success message (hidden, shown after form submit) -->
+    <div class="card" id="successCard" style="display:none">
+      <div class="card-header" style="background:var(--green-bg);color:var(--green)">Session Created</div>
+      <div class="card-body">
+        <p style="font-size:0.88em;margin-bottom:12px"><strong>Session ID:</strong> <span id="resSessionId"></span></p>
+        <p style="font-size:0.88em;margin-bottom:12px"><strong>Scan Link:</strong><br>
+          <code id="resScanLink" style="word-break:break-all;font-size:0.82em;background:var(--bg-body);padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px"></code>
+        </p>
+        <p style="font-size:0.88em;margin-bottom:12px"><strong>Expires:</strong> <span id="resExpires"></span></p>
+        <p style="font-size:0.82em;color:var(--text-3)">The customer will receive their scan instructions shortly.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleInsurance() {
+  const pt = document.getElementById('projectType').value;
+  const show = pt === 'insurance_claim';
+  document.getElementById('insuranceFields').style.display = show ? 'block' : 'none';
+  document.getElementById('isInsurance').value = show ? 'true' : 'false';
+}
+
+document.getElementById('intakeForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const form = new FormData(this);
+  const btn = this.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = 'Creating session...';
+
+  try {
+    const resp = await fetch('/api/v1/self-service/create', { method: 'POST', body: form });
+    const data = await resp.json();
+
+    if (data.success) {
+      document.getElementById('resSessionId').textContent = data.session_id;
+      document.getElementById('resScanLink').textContent = data.scan_link;
+      document.getElementById('resExpires').textContent = data.expires_at;
+      document.getElementById('successCard').style.display = 'block';
+      btn.textContent = 'Session Created!';
+      btn.style.background = 'var(--green)';
+    } else {
+      alert('Error creating session: ' + (data.detail || 'Unknown error'));
+      btn.disabled = false;
+      btn.textContent = 'Create Scan Session & Send Link';
+    }
+  } catch (err) {
+    alert('Network error: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Create Scan Session & Send Link';
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% set active_page = "learning" %}
+
+{% block title %}AI Learning — Envelope Estimator{% endblock %}
+{% block page_title %}AI Learning Engine{% endblock %}
+
+{% block topbar_actions %}
+<button class="btn btn-primary btn-sm" onclick="generateInsights()">Generate Insights</button>
+{% endblock %}
+
+{% block content %}
+<!-- STATS -->
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">Estimates Recorded</div>
+    <div class="stat-val blue">{{ dashboard.total_estimates }}</div>
+    <div class="stat-sub">Training the engine</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Feedback Records</div>
+    <div class="stat-val">{{ dashboard.total_feedback_records }}</div>
+    <div class="stat-sub">Actuals + ratings + win/loss</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Accuracy</div>
+    <div class="stat-val {% if dashboard.avg_accuracy >= 90 %}green{% endif %}">{{ "%.1f"|format(dashboard.avg_accuracy) }}%</div>
+    <div class="stat-sub">
+      <div class="pbar" style="margin-top:6px">
+        <div class="pfill" style="width:{{ dashboard.avg_accuracy }}%;background:{% if dashboard.avg_accuracy >= 90 %}var(--green){% elif dashboard.avg_accuracy >= 75 %}var(--accent){% else %}var(--yellow){% endif %}"></div>
+      </div>
+    </div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Win Rate</div>
+    <div class="stat-val">{{ "%.1f"|format(dashboard.win_rate) }}%</div>
+    <div class="stat-sub">Bid success rate</div>
+  </div>
+</div>
+
+<div class="g2 mb">
+  <!-- CALIBRATION FACTORS -->
+  <div class="card">
+    <div class="card-header">Active Calibration Factors</div>
+    <div class="card-body" style="padding:0">
+      {% if calibrations %}
+      <table class="tbl">
+        <thead>
+          <tr><th>Dimension</th><th class="r">Factor</th><th class="r">Adjustment</th><th class="r">Samples</th><th class="r">Confidence</th></tr>
+        </thead>
+        <tbody>
+          {% for c in calibrations %}
+          <tr>
+            <td style="font-weight:600;font-size:0.85em">{{ c.dimension }}</td>
+            <td class="r">{{ "%.4f"|format(c.factor) }}</td>
+            <td class="r" style="color:{% if c.factor > 1 %}var(--green){% elif c.factor < 1 %}var(--red){% else %}var(--text-2){% endif %}">
+              {{ "%+.1f"|format((c.factor - 1) * 100) }}%
+            </td>
+            <td class="r">{{ c.sample_size }}</td>
+            <td class="r">
+              <div class="pbar" style="width:60px;display:inline-block;vertical-align:middle">
+                <div class="pfill" style="width:{{ (c.confidence * 100)|int }}%;background:var(--accent)"></div>
+              </div>
+              {{ "%.0f"|format(c.confidence * 100) }}%
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">
+        <h3>No calibration data yet</h3>
+        <p>Record feedback on estimates to start building calibration factors.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- PRICING TRENDS -->
+  <div class="card">
+    <div class="card-header">Pricing Trends</div>
+    <div class="card-body" style="padding:0">
+      {% if trends %}
+      <table class="tbl">
+        <thead>
+          <tr><th>Dimension</th><th>Direction</th><th class="r">Monthly Change</th><th class="r">Data Points</th></tr>
+        </thead>
+        <tbody>
+          {% for t in trends %}
+          <tr>
+            <td style="font-weight:600;font-size:0.85em">{{ t.dimension }}</td>
+            <td>
+              <span class="pill pill-{% if t.trend_direction == 'rising' %}red{% elif t.trend_direction == 'falling' %}green{% else %}gray{% endif %}">
+                {% if t.trend_direction == 'rising' %}&uarr;{% elif t.trend_direction == 'falling' %}&darr;{% else %}&mdash;{% endif %}
+                {{ t.trend_direction }}
+              </span>
+            </td>
+            <td class="r" style="color:{% if t.monthly_change_pct > 0 %}var(--red){% elif t.monthly_change_pct < 0 %}var(--green){% else %}var(--text-2){% endif %}">
+              {{ "%+.1f"|format(t.monthly_change_pct) }}%
+            </td>
+            <td class="r">{{ t.data_points|length }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">
+        <h3>No trend data yet</h3>
+        <p>Trends build automatically as more estimates are processed.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- INSIGHTS -->
+<div class="card mb">
+  <div class="card-header">AI-Generated Insights</div>
+  <div class="card-body" style="padding:0" id="insightsContainer">
+    {% if insights %}
+    {% for ins in insights %}
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;gap:14px;align-items:flex-start">
+      <span class="pill pill-{% if ins.severity == 'action_required' %}red{% elif ins.severity == 'warning' %}yellow{% else %}blue{% endif %}" style="flex-shrink:0;margin-top:2px">
+        {{ ins.severity }}
+      </span>
+      <div>
+        <div style="font-weight:600;font-size:0.9em">{{ ins.title }}</div>
+        <div style="font-size:0.84em;color:var(--text-2);margin-top:4px">{{ ins.description }}</div>
+        <div style="font-size:0.82em;color:var(--accent);margin-top:6px;font-weight:500">&rarr; {{ ins.recommendation }}</div>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="empty">
+      <h3>No insights yet</h3>
+      <p>Click "Generate Insights" when you have 5+ estimates with feedback.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- BENCHMARKS -->
+{% if benchmarks %}
+<div class="card">
+  <div class="card-header">Project Benchmarks</div>
+  <div class="card-body" style="padding:0">
+    <table class="tbl">
+      <thead>
+        <tr><th>Cluster</th><th class="r">Avg $/SF</th><th class="r">Median $/SF</th><th class="r">Avg Total</th><th class="r">Avg Days</th><th class="r">Win Rate</th><th class="r">Samples</th></tr>
+      </thead>
+      <tbody>
+        {% for b in benchmarks %}
+        <tr>
+          <td style="font-weight:600;font-size:0.85em">{{ b.cluster | replace('_',' ') | title }}</td>
+          <td class="r">${{ "%.2f"|format(b.avg_cost_per_sf) }}</td>
+          <td class="r">${{ "%.2f"|format(b.median_cost_per_sf) }}</td>
+          <td class="r">${{ "{:,.0f}".format(b.avg_total) }}</td>
+          <td class="r">{{ b.avg_days }}</td>
+          <td class="r">{{ "%.0f"|format(b.win_rate * 100) }}%</td>
+          <td class="r">{{ b.sample_size }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<script>
+async function generateInsights() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+
+  try {
+    const resp = await fetch('/api/v1/learning/generate-insights', { method:'POST' });
+    const data = await resp.json();
+    btn.textContent = `Generated ${data.insights_count} insights`;
+    if (data.insights_count > 0) {
+      setTimeout(() => location.reload(), 1000);
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Generate Insights';
+  }
+}
+</script>
+{% endblock %}
